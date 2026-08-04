@@ -1,0 +1,7 @@
+output:
+  dir: ./example/tools
+packages:
+  # Your own tool packages:
+  - github.com/fzxbl/mcp-toolify/example/greeter
+  # Built-in companion tool for exploring large (spilled) results:
+  - github.com/fzxbl/mcp-toolify/spillexplore
