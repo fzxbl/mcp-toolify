@@ -37,10 +37,17 @@ type TokenCaps struct {
 	Name string
 }
 
+// defaultIdentityHeader 是参与鉴权的调用人身份默认来源 HTTP 头名。
+const defaultIdentityHeader = "X-MCP-User"
+
 // AuthzConfig 是 HTTP 鉴权的配置（对应 conf/mcp/mcp.toml）。
 type AuthzConfig struct {
 	Tokens        []TokenEntry        `toml:"tokens"`
 	RiskAllowlist map[string][]string `toml:"risk_allowlist"` // level -> 身份列表
+	// IdentityHeaders 指定取调用人身份的请求头名（有序）：按从前到后的顺序，取第一个
+	// 在请求中非空的头值作为身份，用于按人鉴权与审计（user 字段）。缺省/为空时用
+	// defaultIdentityHeader（X-MCP-User）。由可信网关注入，服务端直接信任其值。
+	IdentityHeaders []string `toml:"identity_headers"`
 }
 
 // Validate 校验 token 配置的基本合法性与审计元信息完整性：
@@ -113,6 +120,8 @@ func (s *staticAuthorizer) CanRun(identity string, level RiskLevel) bool {
 // Authz 聚合 token->读写风险上限 映射与按人风险判定。
 type Authz struct {
 	tokens map[string]TokenCaps
+	// identityHeaders 是取调用人身份的有序请求头名（来自配置，缺省 [X-MCP-User]）。
+	identityHeaders []string
 	RiskAuthorizer
 }
 
@@ -131,9 +140,48 @@ func NewAuthz(cfg AuthzConfig) *Authz {
 		}
 	}
 	return &Authz{
-		tokens:         tokens,
-		RiskAuthorizer: newStaticAuthorizer(cfg.RiskAllowlist),
+		tokens:          tokens,
+		identityHeaders: normalizeIdentityHeaders(cfg.IdentityHeaders),
+		RiskAuthorizer:  newStaticAuthorizer(cfg.RiskAllowlist),
 	}
+}
+
+// normalizeIdentityHeaders 去空白、去空项、保序去重（大小写不敏感）。
+func normalizeIdentityHeaders(names []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		key := strings.ToLower(n)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, n)
+	}
+	return out
+}
+
+// IdentityHeaders 返回取调用人身份的有序请求头名；未配置时回退 [X-MCP-User]。
+func (a *Authz) IdentityHeaders() []string {
+	if len(a.identityHeaders) > 0 {
+		return a.identityHeaders
+	}
+	return []string{defaultIdentityHeader}
+}
+
+// ResolveIdentity 按配置的头名顺序取第一个非空值作为调用人身份；都为空返回 ""。
+// get 通常为 http.Header.Get。
+func (a *Authz) ResolveIdentity(get func(name string) string) string {
+	for _, h := range a.IdentityHeaders() {
+		if v := strings.TrimSpace(get(h)); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // parseCeiling 解析 token 的读/写风险上限字段：空 => 该类不允许；

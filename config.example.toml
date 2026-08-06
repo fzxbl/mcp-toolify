@@ -8,6 +8,16 @@
 #     以安全默认运行（内置 spill 阈值、不额外记录 header、关闭鉴权）。
 #     复制为 mcp.toml 后修改；切勿提交真实 token。
 
+# ── Identity headers (top-level key; must precede any [section]) ────────────
+# EN: Ordered list of request headers carrying the caller identity used for
+#     per-caller authz and the audit "user" field. Resolved front-to-back: the
+#     first header with a non-empty value wins. Injected by a trusted gateway,
+#     trusted as-is. Omit / empty => ["X-MCP-User"].
+# 中: 参与按人鉴权与审计（user 字段）的调用人身份来源请求头列表（有序）：从前到后取
+#     第一个非空的头值。由可信网关注入，服务端直接信任其值。省略/留空 => ["X-MCP-User"]。
+#     （顶层键，必须写在任何 [段] 之前。）
+identity_headers = ["X-MCP-User"]
+
 # ── Spill: auto-offload large tool results to disk ─────────────────────────
 # EN: Results whose estimated token size exceeds this threshold are stored as a
 #     spill:// resource instead of inlined, explored on demand via spill_explore.

@@ -138,6 +138,8 @@ mux.Handle("/spill/", spillH) // large-result download endpoint
 Set `Config.AuthzEnabled = true` (HTTP only) and point `Config.ConfigPath` at a TOML file:
 
 ```toml
+identity_headers = ["X-MCP-User"]   # ordered headers for caller identity; first non-empty wins (top-level; omit => ["X-MCP-User"])
+
 [spill]
 max_result_tokens = 4000   # results above this estimate spill to disk; -1 disables
 
@@ -149,12 +151,12 @@ read = "medium"        # max read risk; omit to disallow reads
 # write = "low"        # max write risk; omit to disallow writes
 
 [risk_allowlist]
-high = ["alice"]       # X-MCP-User values allowed to run high-risk tools
+high = ["alice"]       # identity values allowed to run high-risk tools
 medium = ["bob"]
 ```
 
 - Connection + `tools/list` are filtered by the **token's** ceilings only (what this connection can ever do).
-- `tools/call` additionally checks the **caller** (`X-MCP-User`) against `risk_allowlist` for `medium`/`high` tools.
+- `tools/call` additionally checks the **caller** identity (resolved from `identity_headers` front-to-back, first non-empty wins; default `X-MCP-User`) against `risk_allowlist` for `medium`/`high` tools.
 
 ## Audit headers
 

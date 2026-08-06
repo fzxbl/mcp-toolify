@@ -11,7 +11,7 @@ import (
 // AuthContext 是从 HTTP header 解析出的连接/调用鉴权上下文。
 type AuthContext struct {
 	Caps      TokenCaps // 由 Authorization token 决定的读/写风险上限
-	Identity  string    // 由 X-MCP-User 转发；可能为空
+	Identity  string    // 调用人身份，取配置身份头列表（默认 [X-MCP-User]）中第一个非空值；可能为空
 	TokenName string    // token 用途名（配置里的 name），用于审计日志
 }
 
@@ -136,7 +136,7 @@ func HTTPAuthContext(next http.Handler, authz *Authz) http.Handler {
 		}
 		ctx := WithAuthContext(r.Context(), AuthContext{
 			Caps:      caps,
-			Identity:  r.Header.Get("X-MCP-User"),
+			Identity:  authz.ResolveIdentity(r.Header.Get),
 			TokenName: caps.Name,
 		})
 		next.ServeHTTP(w, r.WithContext(ctx))

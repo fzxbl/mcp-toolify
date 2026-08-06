@@ -138,6 +138,8 @@ mux.Handle("/spill/", spillH) // 大结果下载端点
 设 `Config.AuthzEnabled = true`（仅 HTTP 生效），并让 `Config.ConfigPath` 指向一个 TOML 文件：
 
 ```toml
+identity_headers = ["X-MCP-User"]   # 调用人身份来源请求头（有序，取第一个非空；顶层键；省略 => ["X-MCP-User"]）
+
 [spill]
 max_result_tokens = 4000   # 估算超过该值的结果落盘；-1 关闭
 
@@ -154,7 +156,7 @@ medium = ["bob"]
 ```
 
 - 连接与 `tools/list` 只按 **token** 的上限过滤（这条连接最多能做什么）。
-- `tools/call` 再按**调用者**（`X-MCP-User`）匹配 `risk_allowlist` 校验 `medium`/`high` 工具。
+- `tools/call` 再按**调用者**身份（从 `identity_headers` 从前到后取第一个非空值，默认 `X-MCP-User`）匹配 `risk_allowlist` 校验 `medium`/`high` 工具。
 
 ## 审计请求头
 
