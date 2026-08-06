@@ -156,6 +156,28 @@ medium = ["bob"]
 - Connection + `tools/list` are filtered by the **token's** ceilings only (what this connection can ever do).
 - `tools/call` additionally checks the **caller** (`X-MCP-User`) against `risk_allowlist` for `medium`/`high` tools.
 
+## Audit headers
+
+Point `Config.ConfigPath` at the same TOML file to record chosen request headers into the audit log. This is audit-only and independent of `AuthzEnabled`:
+
+```toml
+[audit]
+headers = ["X-Tenant-Id", "X-Client-Id"]
+```
+
+Each listed header becomes its own audit field, keyed by the lowercased header name (e.g. `X-Tenant-Id` → `x-tenant-id`); a missing header is logged as `-`. Omit the section (or leave it empty) to record no extra headers. Values are trusted as-is, so only enable this behind a trusted gateway and avoid listing credential headers (`Authorization`, `Cookie`).
+
+## Request id & access log
+
+Every HTTP request carries a **logid** for cross-log correlation:
+
+```toml
+[log]
+logid_header = "X-Log-Id"   # header to read the incoming logid from; omit => "X-Log-Id"
+```
+
+`HTTPLogID` takes the logid from that header (or generates one when absent), injects it into the request context, echoes it back in the same response header, and records it as the `logid` field of every audit record. When you run the built-in standalone server (`Start`/`Run` over HTTP) it also emits a per-request **access log** (`logid`, `method`, `path`, `status`, `cost`, `user`) through the same `Logger`, so a request can be traced across the access log and the audit log by its `logid`. When you mount the handlers into your own server (`Handlers`), no access log is added — the logid is still injected and echoed so your host's access log can correlate.
+
 ## Layout
 
 - `toolify.go` — public entry points: `Start`, `Handlers`, `Config`, `Logger`, `SetAuditLogger`, `RegisterToolMeta`.

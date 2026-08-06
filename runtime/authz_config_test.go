@@ -13,13 +13,13 @@ func TestLoadAuthzConfig(t *testing.T) {
 [[tokens]]
 token = "ro-1"
 name = "readonly-agent"
-applicant = "gaojian15"
+applicant = "alice"
 read = "high"
 
 [[tokens]]
 token = "rw-1"
 name = "readwrite-agent"
-applicant = "gaojian15"
+applicant = "alice"
 read = "high"
 write = "low"
 
@@ -40,10 +40,10 @@ high = ["zhangsan"]
 	if cfg.RiskAllowlist["high"][0] != "zhangsan" {
 		t.Errorf("high allowlist = %v", cfg.RiskAllowlist["high"])
 	}
-	if cfg.Tokens[0].Name != "readonly-agent" || cfg.Tokens[0].Applicant != "gaojian15" {
+	if cfg.Tokens[0].Name != "readonly-agent" || cfg.Tokens[0].Applicant != "alice" {
 		t.Errorf("tokens[0] name/applicant = %q/%q", cfg.Tokens[0].Name, cfg.Tokens[0].Applicant)
 	}
-	if cfg.Tokens[1].Name != "readwrite-agent" || cfg.Tokens[1].Applicant != "gaojian15" {
+	if cfg.Tokens[1].Name != "readwrite-agent" || cfg.Tokens[1].Applicant != "alice" {
 		t.Errorf("tokens[1] name/applicant = %q/%q", cfg.Tokens[1].Name, cfg.Tokens[1].Applicant)
 	}
 	if err := cfg.Validate(); err != nil {

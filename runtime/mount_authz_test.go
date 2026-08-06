@@ -28,7 +28,7 @@ func TestMCPHandler_AuthzConfigValidation(t *testing.T) {
 		path := writeMCPConf(t, dir, `
 [[tokens]]
 token = "ro-1"
-applicant = "gaojian15"
+applicant = "alice"
 read = "medium"
 `)
 
@@ -48,7 +48,7 @@ read = "medium"
 [[tokens]]
 token = "ro-1"
 name = "readonly-agent"
-applicant = "gaojian15"
+applicant = "alice"
 read = "medium"
 `)
 

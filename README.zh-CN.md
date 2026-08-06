@@ -156,6 +156,28 @@ medium = ["bob"]
 - 连接与 `tools/list` 只按 **token** 的上限过滤（这条连接最多能做什么）。
 - `tools/call` 再按**调用者**（`X-MCP-User`）匹配 `risk_allowlist` 校验 `medium`/`high` 工具。
 
+## 审计请求头
+
+把 `Config.ConfigPath` 指向同一个 TOML 文件，即可把指定请求头记入审计日志。纯审计用途，与 `AuthzEnabled` 无关：
+
+```toml
+[audit]
+headers = ["X-Tenant-Id", "X-Client-Id"]
+```
+
+列出的每个 header 会成为一个独立审计字段，字段名为 header 名的小写形式（如 `X-Tenant-Id` → `x-tenant-id`）；请求未带该 header 时记为 `-`。省略该段或留空表示不额外记录任何 header。header 值会被直接信任，因此仅应在可信网关之后启用，且不要把凭据类 header（`Authorization`、`Cookie`）列入。
+
+## 请求 ID 与接入层日志
+
+每个 HTTP 请求都带一个 **logid** 用于跨日志串联：
+
+```toml
+[log]
+logid_header = "X-Log-Id"   # 读取入站 logid 的头名；省略 => "X-Log-Id"
+```
+
+`HTTPLogID` 从该头取 logid（缺失则自动生成），注入请求 ctx、回写同名响应头，并作为每条审计记录的 `logid` 字段。用内置独立 server 启动（`Start`/`Run` 走 HTTP）时，还会通过同一个 `Logger` 输出每请求一行的**接入层 access 日志**（`logid`、`method`、`path`、`status`、`cost`、`user`），从而可按 `logid` 在 access 日志与审计日志之间串联同一次请求。把 handler 挂载进你自己的 server（`Handlers`）时不添加 access 日志——但仍会注入并回写 logid，供宿主自己的 access 日志串联。
+
 ## 目录结构
 
 - `toolify.go` —— 对外入口：`Start`、`Handlers`、`Config`、`Logger`、`SetAuditLogger`、`RegisterToolMeta`。

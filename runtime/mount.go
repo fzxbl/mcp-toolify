@@ -18,6 +18,8 @@ func BuildServer(cfg Config, registrar Registrar) *mcp.Server {
 	registrar(s, RegisterOptions{Enable: cfg.Enable, Tags: cfg.Tags})
 	InitSpillStore(context.Background(), cfg.SpillDir, spillTTLConfig{})
 	InitSpillConfig(cfg.ConfigPath)
+	InitAuditConfig(cfg.ConfigPath)
+	InitLogConfig(cfg.ConfigPath)
 	RegisterSpillResource(s)
 	runStartupHooks(context.Background())
 	s.AddReceivingMiddleware(LoggingMiddleware())
@@ -40,9 +42,12 @@ func MCPHandler(cfg Config, s *mcp.Server) (http.Handler, error) {
 		if err := authzCfg.Validate(); err != nil {
 			return nil, fmt.Errorf("invalid mcp authz config: %w", err)
 		}
-		return NewAuthzHandler(s, NewAuthz(authzCfg)), nil
+		// logid 在最外层解析/生成，审计 header 其次，再进鉴权/协议处理。
+		// 挂载到宿主时不加 access 日志（宿主自有），但注入 logid 以便宿主 access 日志串联。
+		return HTTPLogID(HTTPAuditHeaders(NewAuthzHandler(s, NewAuthz(authzCfg)))), nil
 	}
-	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, nil), nil
+	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, nil)
+	return HTTPLogID(HTTPAuditHeaders(h)), nil
 }
 
 // SpillHandler 返回 /spill/<id> 大结果下载端点的 http.Handler。

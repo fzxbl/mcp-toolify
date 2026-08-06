@@ -51,8 +51,8 @@ func TestAuthzHTTP_EndToEnd(t *testing.T) {
 
 	authz := NewAuthz(AuthzConfig{
 		Tokens: []TokenEntry{
-			{Token: "ro-1", Name: "readonly-agent", Applicant: "gaojian15", Read: "high"},
-			{Token: "rw-1", Name: "readwrite-agent", Applicant: "gaojian15", Read: "high", Write: "high"},
+			{Token: "ro-1", Name: "readonly-agent", Applicant: "alice", Read: "high"},
+			{Token: "rw-1", Name: "readwrite-agent", Applicant: "alice", Read: "high", Write: "high"},
 		},
 		RiskAllowlist: map[string][]string{"high": {"zhangsan"}},
 	})
@@ -139,7 +139,7 @@ func TestAuthzHTTP_EndToEnd(t *testing.T) {
 // （审计日志用）与调用人身份一起注入请求 ctx。
 func TestHTTPAuthContext_InjectsTokenName(t *testing.T) {
 	authz := NewAuthz(AuthzConfig{Tokens: []TokenEntry{
-		{Token: "ro-1", Name: "readonly-agent", Applicant: "gaojian15", Read: "high"},
+		{Token: "ro-1", Name: "readonly-agent", Applicant: "alice", Read: "high"},
 	}})
 
 	var got AuthContext
