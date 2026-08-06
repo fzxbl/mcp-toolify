@@ -20,7 +20,7 @@ type TokenEntry struct {
 	// Name 是 token 的用途标识（如 readonly-agent），会写入审计日志的 token_name 字段，
 	// 用于定位一次调用走的是哪条接入通道。必填。
 	Name string `toml:"name"`
-	// Applicant 是申请人 uuap，仅留在配置里用于审计追溯（按 token_name 反查），不进日志。必填。
+	// Applicant 是申请人标识（requester id），仅留在配置里用于审计追溯（按 token_name 反查），不进日志。必填。
 	Applicant string `toml:"applicant"`
 	Read      string `toml:"read"`  // 读操作最高风险；空 => 不允许读
 	Write     string `toml:"write"` // 写操作最高风险；空 => 不允许写
@@ -64,7 +64,7 @@ func (c AuthzConfig) Validate() error {
 			return fmt.Errorf("tokens[%d] 缺少 name（token 用途标识，必填）", i)
 		}
 		if strings.TrimSpace(e.Applicant) == "" {
-			return fmt.Errorf("tokens[%d] (name=%s) 缺少 applicant（申请人 uuap，必填）", i, e.Name)
+			return fmt.Errorf("tokens[%d] (name=%s) 缺少 applicant（申请人标识，必填）", i, e.Name)
 		}
 	}
 	return nil

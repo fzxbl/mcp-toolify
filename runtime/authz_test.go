@@ -8,8 +8,8 @@ import (
 func newTestAuthz() *Authz {
 	return NewAuthz(AuthzConfig{
 		Tokens: []TokenEntry{
-			{Token: "ro-1", Name: "readonly-agent", Applicant: "gaojian15", Read: "high"},                 // 只读，读到 high，不能写
-			{Token: "rw-1", Name: "readwrite-agent", Applicant: "gaojian15", Read: "high", Write: "high"}, // 读写都到 high
+			{Token: "ro-1", Name: "readonly-agent", Applicant: "alice", Read: "high"},                 // 只读，读到 high，不能写
+			{Token: "rw-1", Name: "readwrite-agent", Applicant: "alice", Read: "high", Write: "high"}, // 读写都到 high
 		},
 		RiskAllowlist: map[string][]string{
 			"medium": {"zhangsan", "lisi"},
@@ -25,8 +25,8 @@ func TestAuthzConfig_Validate(t *testing.T) {
 
 	t.Run("missing name", func(t *testing.T) {
 		cfg := AuthzConfig{Tokens: []TokenEntry{
-			{Token: "ok-1", Name: "readonly-agent", Applicant: "gaojian15", Read: "low"},
-			{Token: secret, Name: "  ", Applicant: "gaojian15", Read: "low"},
+			{Token: "ok-1", Name: "readonly-agent", Applicant: "alice", Read: "low"},
+			{Token: secret, Name: "  ", Applicant: "alice", Read: "low"},
 		}}
 		err := cfg.Validate()
 		if err == nil {
@@ -58,7 +58,7 @@ func TestAuthzConfig_Validate(t *testing.T) {
 
 	t.Run("complete", func(t *testing.T) {
 		cfg := AuthzConfig{Tokens: []TokenEntry{
-			{Token: secret, Name: "readonly-agent", Applicant: "gaojian15", Read: "low"},
+			{Token: secret, Name: "readonly-agent", Applicant: "alice", Read: "low"},
 		}}
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("unexpected error: %v", err)
@@ -73,7 +73,7 @@ func TestAuthzConfig_Validate(t *testing.T) {
 
 	t.Run("empty token", func(t *testing.T) {
 		cfg := AuthzConfig{Tokens: []TokenEntry{
-			{Token: "  ", Name: "readonly-agent", Applicant: "gaojian15", Read: "low"},
+			{Token: "  ", Name: "readonly-agent", Applicant: "alice", Read: "low"},
 		}}
 		err := cfg.Validate()
 		if err == nil {
@@ -86,9 +86,9 @@ func TestAuthzConfig_Validate(t *testing.T) {
 
 	t.Run("duplicate token", func(t *testing.T) {
 		cfg := AuthzConfig{Tokens: []TokenEntry{
-			{Token: secret, Name: "readonly-agent", Applicant: "gaojian15", Read: "low"},
-			{Token: "other", Name: "other-agent", Applicant: "gaojian15", Read: "low"},
-			{Token: secret, Name: "readwrite-agent", Applicant: "gaojian15", Read: "low", Write: "low"},
+			{Token: secret, Name: "readonly-agent", Applicant: "alice", Read: "low"},
+			{Token: "other", Name: "other-agent", Applicant: "alice", Read: "low"},
+			{Token: secret, Name: "readwrite-agent", Applicant: "alice", Read: "low", Write: "low"},
 		}}
 		err := cfg.Validate()
 		if err == nil {

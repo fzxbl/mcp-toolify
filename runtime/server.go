@@ -51,6 +51,8 @@ func Run(ctx context.Context, cfg Config, registrar Registrar) error {
 	registrar(s, RegisterOptions{Enable: cfg.Enable, Tags: cfg.Tags})
 	InitSpillStore(ctx, cfg.SpillDir, spillTTLConfig{})
 	InitSpillConfig(cfg.ConfigPath)
+	InitAuditConfig(cfg.ConfigPath)
+	InitLogConfig(cfg.ConfigPath)
 	RegisterSpillResource(s)
 	runStartupHooks(ctx)
 	s.AddReceivingMiddleware(LoggingMiddleware())
@@ -103,8 +105,10 @@ func runHTTP(ctx context.Context, cfg Config, s *mcp.Server) error {
 	} else {
 		handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, nil)
 	}
-	mux.Handle("/", handler) // 其余交给 MCP 传输
-	srv := &http.Server{Handler: mux}
+	mux.Handle("/", HTTPAuditHeaders(handler)) // 其余交给 MCP 传输（先采集审计 header）
+	// logid 在最外层解析/生成（注入 ctx 供审计与 access 日志共用），其内是内置接入层
+	// access 日志：独立 Run() 启动时提供一份 service 日志，与审计日志靠同一 logid 串联。
+	srv := &http.Server{Handler: HTTPLogID(httpAccessLog(mux))}
 
 	log.Printf("MCP server listening on http://%s (enable=%v tags=%v, spill base=%s)",
 		ln.Addr().String(), cfg.Enable, cfg.Tags, base)

@@ -1,0 +1,73 @@
+# mcp-toolify example configuration / mcp-toolify 示例配置
+#
+# EN: Pass this file's path via Config.ConfigPath. Every section is OPTIONAL:
+#     with an empty/absent ConfigPath the server runs with safe defaults
+#     (built-in spill threshold, no audit headers, authz disabled).
+#     Copy to e.g. mcp.toml and edit. Never commit real tokens.
+# 中: 通过 Config.ConfigPath 传入本文件路径。所有段都是可选的：ConfigPath 为空时
+#     以安全默认运行（内置 spill 阈值、不额外记录 header、关闭鉴权）。
+#     复制为 mcp.toml 后修改；切勿提交真实 token。
+
+# ── Spill: auto-offload large tool results to disk ─────────────────────────
+# EN: Results whose estimated token size exceeds this threshold are stored as a
+#     spill:// resource instead of inlined, explored on demand via spill_explore.
+#     0 / omitted => built-in default (4000). -1 disables auto-spill.
+# 中: 估算 token 数超过该阈值的结果不再内联，改存为 spill:// 资源，由 spill_explore
+#     按需探索。0/缺省 => 内置默认 4000；-1 关闭自动落盘。
+[spill]
+max_result_tokens = 4000
+
+# ── Audit: record chosen request headers into the audit log ────────────────
+# EN: Pure audit, independent of authz. Each listed header becomes its own audit
+#     field keyed by the lowercased header name (e.g. X-Tenant-Id -> x-tenant-id); a
+#     missing header is logged as "-". Omit the section to record none.
+#     Values are trusted as-is: enable only behind a trusted gateway, and do NOT
+#     list credential headers such as Authorization or Cookie.
+# 中: 纯审计，与鉴权无关。列出的每个 header 会成为独立审计字段，字段名为 header 名小写
+#     （如 X-Tenant-Id -> x-tenant-id）；请求未带该 header 时记为 "-"。省略该段则不额外记录。
+#     header 值被直接信任：仅应在可信网关之后启用，且不要列入 Authorization、Cookie 等凭据类 header。
+[audit]
+headers = ["X-Tenant-Id", "X-Client-Id"]
+
+# ── Log: request id (logid) for correlation ────────────────────────────────
+# EN: Each HTTP request gets a logid — taken from this header if present, else
+#     generated — injected into ctx, echoed back in the same response header, and
+#     recorded in both the audit log and (for standalone Run) the built-in access
+#     log, so one request can be traced across both. Omit => default "X-Log-Id".
+# 中: 每个 HTTP 请求都有一个 logid：优先取该头，缺失则自动生成；注入 ctx、回写同名响应头，
+#     并同时写入审计日志与（独立 Run 时的）内置接入层 access 日志，从而按 logid 串联同一次请求。
+#     省略 => 默认 "X-Log-Id"。
+[log]
+logid_header = "X-Log-Id"
+
+# ── Authorization (HTTP only; requires Config.AuthzEnabled = true) ──────────
+# EN: Each token sets the max read/write RISK level (none|low|medium|high) this
+#     connection may ever reach. Omit `read` (or `write`) to forbid that op.
+#     name: token purpose, written to the audit log's token_name field (required).
+#     applicant: requester id, kept for traceability, not logged (required).
+#     A token missing name or applicant makes startup fail.
+# 中: 每个 token 设定这条连接可达的读/写风险上限（none|low|medium|high）。省略 `read`
+#     （或 `write`）表示禁止该类操作。name：token 用途，写入审计日志 token_name 字段（必填）；
+#     applicant：申请人，仅留档追溯、不进日志（必填）。缺 name 或 applicant 会导致启动失败。
+[[tokens]]
+token = "replace-with-a-random-secret"   # EN: sent as Authorization: Bearer <token> / 中: 以 Authorization: Bearer <token> 传入
+name = "readonly-agent"
+applicant = "your-id"
+read = "medium"        # EN: max read risk; omit to disallow reads / 中: 读上限；省略则禁读
+# write = "low"        # EN: max write risk; omit to disallow writes / 中: 写上限；省略则禁写
+
+# [[tokens]]
+# token = "another-secret"
+# name = "ops-agent"
+# applicant = "your-id"
+# read = "high"
+# write = "high"
+
+# EN: Per-level allowlist, combined with the token ceiling (both must pass).
+#     none/low are allowed for everyone and need not be listed. Values are
+#     X-MCP-User identities forwarded by the trusted gateway.
+# 中: 分级白名单，与 token 上限叠加（两者都通过才放行）。none/low 对所有人放行，无需列出。
+#     取值为可信网关透传的 X-MCP-User 身份。
+[risk_allowlist]
+high = ["alice"]
+medium = ["bob"]

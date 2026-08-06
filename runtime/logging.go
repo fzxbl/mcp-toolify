@@ -19,11 +19,13 @@ func SetAuditLogger(l Logger) { auditLogger = l }
 // LoggingMiddleware 返回一个 receiving middleware，记录每次 MCP RPC。
 //
 // 若已通过 SetAuditLogger 注入 logger，则以结构化字段写入审计日志，字段包含：
+//   - logid：本次请求的日志 ID（由 HTTPLogID 注入），与 access 日志共享，用于串联同一请求
 //   - user：执行人（HTTP 头 X-MCP-User 透传）
 //   - token_name：本次调用所用 token 的用途名（配置 [[tokens]].name），用于审计追溯接入通道
 //   - tool / args：调用的工具名与入参 JSON
 //   - result：返回结果 JSON（截断）
 //   - cost：耗时；err / tool_error：错误信息
+//   - 由 [audit] headers 配置指定的请求头：每个 header 一个独立字段（字段名为 header 名小写）
 //
 // 未注入 logger 时回退到标准 log（stdio 场景）。
 func LoggingMiddleware() mcp.Middleware {
@@ -49,6 +51,7 @@ func logCall(ctx context.Context, method, toolName, argsLit string, res mcp.Resu
 
 	user := identityFromCtx(ctx)
 	fields := []Field{
+		String("logid", logidFromCtx(ctx)),
 		String("method", method),
 		String("user", user),
 		String("token_name", tokenNameFromCtx(ctx)),
@@ -57,6 +60,8 @@ func logCall(ctx context.Context, method, toolName, argsLit string, res mcp.Resu
 		String("result", resultSummary(res)),
 		String("cost", dur.String()),
 	}
+	// 追加配置里指定的请求头（[audit] headers），每个 header 一个独立字段。
+	fields = append(fields, auditHeaderFields(ctx)...)
 
 	switch {
 	case err != nil:
@@ -89,6 +94,15 @@ func logCallStd(method, toolName, argsLit string, res mcp.Result, err error, dur
 func identityFromCtx(ctx context.Context) string {
 	if ac, ok := AuthFromContext(ctx); ok && ac.Identity != "" {
 		return ac.Identity
+	}
+	return "-"
+}
+
+// logidFromCtx 取本次请求的 logid（由 HTTPLogID 注入），缺失返回 "-"。
+// 审计日志与 access 日志共享该 logid，可据此串联同一次请求。
+func logidFromCtx(ctx context.Context) string {
+	if id := LogIDFromContext(ctx); id != "" {
+		return id
 	}
 	return "-"
 }
