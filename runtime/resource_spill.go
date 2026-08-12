@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -31,8 +32,9 @@ const spillScheme = "spill"
 // 形如 http://host:8011。由 runHTTP 在启动时通过 SetSpillBaseURL 设置。
 // 为空时 SpillResult 不吐出下载 URL（例如 stdio 传输下没有 HTTP 端点）。
 var (
-	spillBaseMu  sync.RWMutex
-	spillBaseURL string
+	spillBaseMu       sync.RWMutex
+	spillBaseURL      string
+	spillSelfHostPort string // 从 base 解析出的 host:port，用于判断 spill 归属是否本实例
 )
 
 // SetSpillBaseURL 设置 spill 下载端点的对外基础地址。跨机部署时应传入
@@ -41,6 +43,26 @@ func SetSpillBaseURL(base string) {
 	spillBaseMu.Lock()
 	defer spillBaseMu.Unlock()
 	spillBaseURL = strings.TrimRight(base, "/")
+	spillSelfHostPort = hostPortFromBase(spillBaseURL)
+}
+
+// SpillSelfHostPort 返回本实例对外 host:port（无对外地址时为空）。
+func SpillSelfHostPort() string {
+	spillBaseMu.RLock()
+	defer spillBaseMu.RUnlock()
+	return spillSelfHostPort
+}
+
+// hostPortFromBase 从 "http(s)://host:port[/...]" 提取 "host:port"；无法解析返回空。
+func hostPortFromBase(base string) string {
+	if base == "" {
+		return ""
+	}
+	u, err := url.Parse(base)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Host
 }
 
 func getSpillBaseURL() string {

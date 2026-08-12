@@ -27,6 +27,33 @@ identity_headers = ["X-MCP-User"]
 [spill]
 max_result_tokens = 4000
 
+# EN: Multi-replica proxy (OPTIONAL). In a multi-replica deployment a spill
+#     resource lives only on the disk of the replica that produced it. If a
+#     later spill_explore lands on a different replica, that replica single-hops
+#     to the owner replica's internal /spill-explore endpoint (the owner address
+#     is encoded in the spill id) and returns just the small explored result.
+#     - peer_token: shared secret guarding the internal endpoint. Empty => the
+#       whole proxy is OFF and the endpoint returns 404 (safe default).
+#     - peer_timeout_ms: proxy call timeout; 0 => 5000.
+#     - peer_hosts: optional static allowlist of sibling replica host:port that
+#       may be proxied to. Prefer wiring live service discovery via
+#       SetSpillPeerProvider instead of hardcoding here; empty and no provider
+#       => no remote forwarding is allowed at all (prevents SSRF/token leak).
+#     The owner address embedded in ids comes from SetSpillBaseURL (set by the
+#     host process); leave it unset to keep legacy ids with no proxying.
+# 中: 多副本代理（可选）。多副本部署下，spill 资源只落在产出它的副本本地。若后续
+#     spill_explore 被路由到别的副本本地未命中，该副本会据 id 里编码的属主地址单跳代理到
+#     属主副本的内部 /spill-explore 端点，只取回探索后的小结果。
+#     - peer_token：内部端点的共享密钥；为空 => 整套代理关闭、端点返回 404（安全默认）。
+#     - peer_timeout_ms：代理调用超时；0 => 5000。
+#     - peer_hosts：可选的静态兄弟副本白名单（host:port）；推荐改用 SetSpillPeerProvider
+#       对接实时服务发现，不要在此硬编码；为空且未注册 provider => 不允许任何远端转发
+#       （防 SSRF/密钥外泄）。
+#     id 中编码的属主地址来自 SetSpillBaseURL（由宿主进程设置）；不设置则保持旧式 id 且不代理。
+# peer_token = "replace-with-a-random-secret"
+# peer_timeout_ms = 5000
+# peer_hosts = ["replica-a.internal:8011", "replica-b.internal:8011"]
+
 # ── Audit: record chosen request headers into the audit log ────────────────
 # EN: Pure audit, independent of authz. Each listed header becomes its own audit
 #     field keyed by the lowercased header name (e.g. X-Tenant-Id -> x-tenant-id); a

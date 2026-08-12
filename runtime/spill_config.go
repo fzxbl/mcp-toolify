@@ -17,6 +17,13 @@ type SpillConfig struct {
 	// MaxResultTokens 为工具返回值的 token 阈值：超过则自动落盘为 spill 资源。
 	// 0 或缺省表示用 defaultMaxResultTokens；负数关闭自动 spill，规范写法为 -1。
 	MaxResultTokens int `toml:"max_result_tokens"`
+	// PeerToken 为副本间内部 /spill-explore 端点的共享密钥；为空表示关闭跨副本代理（安全默认）。
+	PeerToken string `toml:"peer_token"`
+	// PeerTimeoutMS 为代理调用超时（毫秒）；0 表示用默认 5000。
+	PeerTimeoutMS int `toml:"peer_timeout_ms"`
+	// PeerHosts 为可选的静态代理白名单（host:port）；多副本部署通常改用 SetSpillPeerProvider
+	// 经服务发现动态提供，无需在此配置。为空且未注册 provider 时不允许任何远端转发（安全默认）。
+	PeerHosts []string `toml:"peer_hosts"`
 }
 
 // spillFileConfig 对应整个 mcp.toml，只取其中的 [spill] 段（其余段由 AuthzConfig 解析）。
@@ -67,6 +74,7 @@ func InitSpillConfig(path string) {
 				path, err, defaultMaxResultTokens)
 		}
 		SetSpillThreshold(defaultMaxResultTokens)
+		SetSpillPeer("", 0)
 		return
 	}
 	cfg, err := LoadSpillConfig(path)
@@ -74,9 +82,14 @@ func InitSpillConfig(path string) {
 		log.Printf("[mcp] load spill config %s failed: %v, use default %d tokens",
 			path, err, defaultMaxResultTokens)
 		SetSpillThreshold(defaultMaxResultTokens)
+		SetSpillPeer("", 0)
 		return
 	}
 	SetSpillThreshold(cfg.MaxResultTokens)
+	SetSpillPeer(cfg.PeerToken, cfg.PeerTimeoutMS)
+	// 静态 peer_hosts 作为可选兜底白名单；嵌入宿主通常再调用 SetSpillPeerProvider
+	// 用服务发现动态覆盖它（后调用者生效）。
+	SetSpillPeers(cfg.PeerHosts)
 }
 
 // estimateTokens 估算 data 的 token 数，避免引入 tokenizer 依赖：

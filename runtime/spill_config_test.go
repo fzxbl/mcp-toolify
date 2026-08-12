@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestEstimateTokens 验证估算规则：ASCII 约 4 字符 1 token，非 ASCII 每字符 1 token。
@@ -115,5 +116,66 @@ func TestInitSpillConfigDefaults(t *testing.T) {
 	InitSpillConfig(bad)
 	if got := spillThreshold(); got != defaultMaxResultTokens {
 		t.Errorf("bad: threshold = %d, want %d", got, defaultMaxResultTokens)
+	}
+}
+
+// TestSpillPeerConfigStore 验证 [spill] 段的 peer 字段被解析并落到进程内 peer 状态：
+// 共享密钥、超时、静态兄弟副本白名单。
+func TestSpillPeerConfigStore(t *testing.T) {
+	// peer 状态是进程级全局，测试后恢复默认（关闭代理）。
+	t.Cleanup(func() {
+		SetSpillPeer("", 0)
+		SetSpillPeerProvider(nil)
+	})
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mcp.toml")
+	content := `
+[spill]
+max_result_tokens = 4000
+peer_token = "s3cret"
+peer_timeout_ms = 1200
+peer_hosts = ["host-a.example.com:8011", "host-b.example.com:8011"]
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadSpillConfig(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.PeerToken != "s3cret" || cfg.PeerTimeoutMS != 1200 {
+		t.Errorf("peer cfg = %q/%d, want s3cret/1200", cfg.PeerToken, cfg.PeerTimeoutMS)
+	}
+	if len(cfg.PeerHosts) != 2 {
+		t.Fatalf("peer_hosts = %v, want 2 entries", cfg.PeerHosts)
+	}
+
+	InitSpillConfig(path)
+	if got := SpillPeerToken(); got != "s3cret" {
+		t.Errorf("SpillPeerToken() = %q, want s3cret", got)
+	}
+	if got := SpillPeerTimeout(); got != 1200*time.Millisecond {
+		t.Errorf("SpillPeerTimeout() = %v, want 1.2s", got)
+	}
+	if !SpillPeerAllowed("host-a.example.com:8011") {
+		t.Error("host-a should be allowed via static peer_hosts")
+	}
+	if SpillPeerAllowed("evil.example.com:8011") {
+		t.Error("unlisted host must not be allowed")
+	}
+
+	// 无 [spill] peer 字段时代理关闭：token 空、白名单拒绝一切。
+	empty := filepath.Join(dir, "empty.toml")
+	if err := os.WriteFile(empty, []byte("[spill]\nmax_result_tokens = 4000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	InitSpillConfig(empty)
+	if SpillPeerToken() != "" {
+		t.Error("peer token should be empty when unconfigured")
+	}
+	if SpillPeerAllowed("host-a.example.com:8011") {
+		t.Error("no peer_hosts should deny all after reinit")
 	}
 }

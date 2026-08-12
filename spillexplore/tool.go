@@ -38,10 +38,20 @@ import (
 // mcp:tags=read,spill
 // mcp:risk=low
 func SpillExplore(id, op string, lineOffset, limit int, pattern, jqExpr string, depth, maxBytes int) (map[string]any, error) {
-	path, ok := runtime.ResolveSpillPath(id)
-	if !ok {
-		return nil, fmt.Errorf("spill resource not found: %s", id)
+	// 1) 本地优先：命中即用（含归属==本实例、以及远端文件已缓存到本地的情况）
+	if path, ok := runtime.ResolveSpillPath(id); ok {
+		return exploreAt(path, id, op, lineOffset, limit, pattern, jqExpr, depth, maxBytes)
 	}
+	// 2) 本地未命中：id 归属为其它实例且在兄弟副本白名单内，则单跳代理
+	if owner, ok := runtime.SpillOwner(id); ok && owner != runtime.SpillSelfHostPort() && runtime.SpillPeerAllowed(owner) {
+		return proxyExplore(owner, id, op, lineOffset, limit, pattern, jqExpr, depth, maxBytes)
+	}
+	// 3) 旧式/无归属/本机归属但文件不存在/归属不在白名单
+	return nil, fmt.Errorf("spill resource not found: %s", id)
+}
+
+// exploreAt 在已知本地 path 上执行 explore 操作。
+func exploreAt(path, id, op string, lineOffset, limit int, pattern, jqExpr string, depth, maxBytes int) (map[string]any, error) {
 	if maxBytes <= 0 {
 		maxBytes = 1 << 20
 	}

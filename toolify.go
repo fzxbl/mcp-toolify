@@ -35,6 +35,20 @@ type Logger = runtime.Logger
 // SetAuditLogger 注入调用审计 logger。应在启动/挂载 server 前调用。
 func SetAuditLogger(l Logger) { runtime.SetAuditLogger(l) }
 
+// SetSpillPeerProvider 注册 spill 跨副本代理的动态兄弟副本发现函数（返回可达 host:port 列表）。
+// 多副本部署时用它对接任意服务发现作为代理转发白名单来源，无需静态配置；传 nil 清除。
+// 与 SetSpillPeers 互为覆盖，后调用者生效。应在挂载/启动 server 前调用。
+func SetSpillPeerProvider(fn func() []string) { runtime.SetSpillPeerProvider(fn) }
+
+// SetSpillPeers 设置静态兄弟副本白名单（host:port）；简单部署可用它替代 provider。
+// 与 SetSpillPeerProvider 互为覆盖，后调用者生效。
+func SetSpillPeers(hosts []string) { runtime.SetSpillPeers(hosts) }
+
+// SpillExploreEndpoint 返回副本间内部 explore 端点（POST，共享密钥鉴权）。用 Handlers 挂载到
+// 既有 HTTP server 时，把它挂在 "/spill-explore" 路径即可让多副本 spill_explore 正常工作；
+// 用 Start 独立启动时该端点已自动注册。共享密钥（[spill].peer_token）未配置时端点返回 404。
+func SpillExploreEndpoint() http.Handler { return runtime.SpillExploreEndpoint() }
+
 // Start 用给定 registrar 启动 MCP server，阻塞直到 ctx 取消或 server 退出。
 func Start(ctx context.Context, cfg Config, registrar Registrar) error {
 	return runtime.Run(ctx, cfg, registrar)

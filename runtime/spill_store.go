@@ -66,8 +66,9 @@ func newDiskSpillStore(dir string, ttl spillTTLConfig) *diskSpillStore {
 }
 
 // create 返回 id 及应写入的文件路径，文件名 <tool>-<id><ext>。
+// id 内嵌本实例归属地址（见 spill_id.go），多副本下 spill_explore 据此定位属主实例。
 func (s *diskSpillStore) create(toolName string, f SpillFormat) (id, path string) {
-	id = newSpillID()
+	id = newSpillIDWithOwner(SpillSelfHostPort())
 	path = filepath.Join(s.dir, toolName+"-"+id+f.ext())
 	return
 }

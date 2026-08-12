@@ -88,6 +88,7 @@ func runHTTP(ctx context.Context, cfg Config, s *mcp.Server) error {
 
 	mux := http.NewServeMux()
 	mux.Handle(spillDownloadPath, SpillDownloadHandler()) // /spill/<id> 大结果下载
+	mux.Handle("/spill-explore", SpillExploreEndpoint())  // 副本间内部 explore 端点（共享密钥鉴权）
 
 	var handler http.Handler
 	if cfg.AuthzEnabled {
