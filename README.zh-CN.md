@@ -26,7 +26,7 @@ Go 编写，官方 MCP SDK，支持 stdio 与 Streamable HTTP。可直接接入 
 - **2. 超大返回值自动落盘——上下文窗口永不被撑爆。** 每个工具返回值都会估算体积；超过可配置的 token 阈值时，不再把大 payload 塞进上下文，而是落盘为临时文件并返回一个 MCP 资源链接 + 简短摘要。内置配套工具 `spill_explore`（对 json/jsonl/text 支持 `read` / `grep` / `schema` / `jq`）让 Agent 按需探索、只取需要的那几行。跨机部署还会自动给出一个可直连下载的 URL；**多副本**部署下，无论 `spill_explore` 落到哪个副本都能正常工作：产出该资源的副本地址会编码进 spill id，本地未命中时单跳代理到属主副本的内部端点，只回传探索后的小结果（默认关闭、共享密钥鉴权、白名单约束）。
 - **3. 连接级鉴权，两层校验。** 每个 token 有读/写**风险上限**，决定这条连接最多能做什么（`tools/list` 也据此过滤）；`tools/call` 再按**调用者身份**匹配分级白名单。一个 Agent 可以用同一条连接服务很多人，每个人仍按其身份受控。工具用 `mcp:risk=low|medium|high` 声明风险、用 `write` 标签声明写意图。
 - **4. 独立运行 *或* 嵌入复用——共用一个 server。** 既可作为独立进程以 stdio/HTTP 运行，也可拿到两个 `http.Handler`，**挂载到你已有的 HTTP server 上**，共用端口与生命周期。外部手写工具也能注册到同一个 server，与生成的工具并存（只需登记其风险元数据）。
-- **5. 零私有依赖——干净、可移植、可审计。** 只依赖官方 Go MCP SDK、`jsonschema-go`、`BurntSushi/toml`，以及内置落盘工具用到的 `gojq`。生成器是独立 module，仅依赖 `golang.org/x/tools` 与 `yaml.v3`。没有别的东西需要信任。
+- **5. 零私有依赖——干净、可移植、可审计。** 只依赖官方 Go MCP SDK、`jsonschema-go`、`BurntSushi/toml`，以及内置落盘工具用到的 `gojq`。代码生成器额外用到 `golang.org/x/tools` 与 `yaml.v3`，仅在运行代码生成时才拉取。没有别的东西需要信任。
 
 以及一批让上述能力可靠落地的机制：
 
@@ -65,7 +65,7 @@ func Greet(name string, excited bool) (string, error) {
 }
 ```
 
-**2. 在 `mcpgen.yaml` 里列出要扫描的包。**
+**2. 在你自己的 module 里建 `mcpgen.yaml`** —— 列出要扫描的包，以及生成 wrapper 的输出目录。其中路径都相对该文件所在目录。
 
 ```yaml
 output:
@@ -76,7 +76,7 @@ packages:
   - github.com/fzxbl/mcp-toolify/spillexplore
 ```
 
-**3. 生成 wrapper。**
+**3. 加一条 `//go:generate` 指令**，放在与 `mcpgen.yaml` 同目录的一个 Go 文件里（如 `gen.go`），再运行它。`-config` 相对该文件所在目录解析。
 
 ```go
 //go:generate go run github.com/fzxbl/mcp-toolify/cmd/mcpgen -config ./mcpgen.yaml
@@ -211,7 +211,7 @@ logid_header = "X-Log-Id"   # 读取入站 logid 的头名；省略 => "X-Log-Id
 - `toolify.go` —— 对外入口：`Start`、`Handlers`、`Config`、`Logger`、`SetAuditLogger`、`RegisterToolMeta`。
 - `runtime/` —— server 装配、鉴权、落盘存储、审计日志。
 - `spillexplore/` —— 内置的 `spill_explore` 工具。
-- `cmd/mcpgen/` —— 代码生成器（独立 module）。
+- `cmd/mcpgen/` —— 代码生成器（用 `go run github.com/fzxbl/mcp-toolify/cmd/mcpgen` 运行）。
 - `cmd/listtools/` —— 打印已暴露工具与 schema 的调试小工具。
 - `example/` —— 最小、可运行的端到端样例。
 

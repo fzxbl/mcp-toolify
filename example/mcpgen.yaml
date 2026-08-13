@@ -1,5 +1,7 @@
+# Which packages to scan for // mcp:tool, and where to write the generated
+# wrappers. Paths are relative to this file's directory.
 output:
-  dir: ./example/tools
+  dir: ./tools
 packages:
   # Your own tool packages:
   - github.com/fzxbl/mcp-toolify/example/greeter

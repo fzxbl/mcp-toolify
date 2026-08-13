@@ -26,7 +26,7 @@ Most ways to expose Go logic as MCP tools mean hand-writing a wrapper per functi
 - **2. Oversized results spill to disk — the model context never blows up.** Every tool return is measured; anything over a configurable token budget is written to a temp file and returned as an MCP resource link + short summary instead of a giant payload. A built-in companion tool, `spill_explore` (`read` / `grep` / `schema` / `jq` over json/jsonl/text), lets the agent explore the blob on demand and pull only the lines it needs. Cross-machine deployments get a direct download URL for free, and in a **multi-replica** setup `spill_explore` still works no matter which replica the call lands on: the producing replica's address is encoded in the spill id, so a local miss single-hops to that owner replica's internal endpoint and returns only the small explored result (opt-in, secret-guarded, allow-listed).
 - **3. Connection-level authorization, two layers.** Per-token read/write **risk ceilings** decide what a connection may ever do (and filter `tools/list` accordingly); `tools/call` additionally checks the **caller identity** against a per-risk allow-list. One agent can share a connection across many users, each still gated by who they are. Tools declare risk with `mcp:risk=low|medium|high` and write-intent with the `write` tag.
 - **4. Standalone *or* embedded — share one server.** Run it over stdio or HTTP as its own process, or get two `http.Handler`s and **mount onto an HTTP server you already have**, sharing the port and lifecycle. External, hand-written tools can be registered onto the same server alongside the generated ones (just register their risk metadata).
-- **5. No proprietary dependencies — clean, portable, auditable.** Only the official Go MCP SDK, `jsonschema-go`, `BurntSushi/toml`, and (for the built-in spill tool) `gojq`. The generator is its own module with just `golang.org/x/tools` + `yaml.v3`. Nothing else to trust.
+- **5. No proprietary dependencies — clean, portable, auditable.** Only the official Go MCP SDK, `jsonschema-go`, `BurntSushi/toml`, and (for the built-in spill tool) `gojq`. The code generator additionally uses `golang.org/x/tools` + `yaml.v3`, pulled in only when you run codegen. Nothing else to trust.
 
 Plus the machinery that makes the above reliable:
 
@@ -65,7 +65,7 @@ func Greet(name string, excited bool) (string, error) {
 }
 ```
 
-**2. List your packages in `mcpgen.yaml`.**
+**2. Create `mcpgen.yaml` in your own module** — list the packages to scan and where to write the generated wrappers. Paths are relative to this file's directory.
 
 ```yaml
 output:
@@ -76,7 +76,7 @@ packages:
   - github.com/fzxbl/mcp-toolify/spillexplore
 ```
 
-**3. Generate the wrappers.**
+**3. Add a `//go:generate` directive** in a Go file next to that `mcpgen.yaml` (e.g. `gen.go`), then run it. `-config` resolves relative to that file's directory.
 
 ```go
 //go:generate go run github.com/fzxbl/mcp-toolify/cmd/mcpgen -config ./mcpgen.yaml
@@ -211,7 +211,7 @@ When you mount onto your own server, expose the endpoint with `mux.Handle("/spil
 - `toolify.go` — public entry points: `Start`, `Handlers`, `Config`, `Logger`, `SetAuditLogger`, `RegisterToolMeta`.
 - `runtime/` — server wiring, authz, spill store, audit logging.
 - `spillexplore/` — the built-in `spill_explore` tool.
-- `cmd/mcpgen/` — the code generator (its own module).
+- `cmd/mcpgen/` — the code generator (`go run github.com/fzxbl/mcp-toolify/cmd/mcpgen`).
 - `cmd/listtools/` — dev helper to dump exposed tools + schemas.
 - `example/` — a minimal, runnable end-to-end sample.
 
