@@ -88,7 +88,6 @@ func runHTTP(ctx context.Context, cfg Config, s *mcp.Server) error {
 
 	mux := http.NewServeMux()
 	mux.Handle(spillDownloadPath, SpillDownloadHandler()) // /spill/<id> 大结果下载
-	mux.Handle("/spill-explore", SpillExploreEndpoint())  // 副本间内部 explore 端点（共享密钥鉴权）
 
 	var handler http.Handler
 	if cfg.AuthzEnabled {
@@ -102,11 +101,12 @@ func runHTTP(ctx context.Context, cfg Config, s *mcp.Server) error {
 		if err := authzCfg.Validate(); err != nil {
 			return fmt.Errorf("invalid mcp authz config: %w", err)
 		}
-		handler = NewAuthzHandler(s, NewAuthz(authzCfg)) // stateless：调用级身份透传
+		handler = NewAuthzHandler(s, NewAuthz(authzCfg))
 	} else {
 		handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, nil)
 	}
-	mux.Handle("/", HTTPAuditHeaders(handler)) // 其余交给 MCP 传输（先采集审计 header）
+	// owner 路由在最外层：把归属兄弟副本的 tools/call 反代到属主 /mcp。
+	mux.Handle("/", HTTPAuditHeaders(WithOwnerRouting(handler)))
 	// logid 在最外层解析/生成（注入 ctx 供审计与 access 日志共用），其内是内置接入层
 	// access 日志：独立 Run() 启动时提供一份 service 日志，与审计日志靠同一 logid 串联。
 	srv := &http.Server{Handler: HTTPLogID(httpAccessLog(mux))}

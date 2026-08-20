@@ -1,17 +1,14 @@
 package runtime
 
 import (
-	"crypto/subtle"
-	"encoding/json"
-	"net/http"
 	"sync"
 	"time"
 )
 
-// 本文件支撑 spill 资源的跨副本访问。分布式部署下 spill 文件只在产出它的实例本地，
-// spill_explore 若被路由到别的实例会本地未命中；此时据 id 里编码的归属地址（见 spill_id.go）
-// 单跳代理到属主实例的内部 /spill-explore 端点取回小结果。端点用共享密钥鉴权，转发目标
-// 受兄弟副本白名单约束（见 SetSpillPeerProvider），共享密钥为空则整套代理关闭（安全默认）。
+// 本文件支撑 spill 资源的跨副本访问基础设施。分布式部署下 spill 文件只在产出它的实例本地，
+// 跨副本路由由 WithOwnerRouting（见 owner_routing.go）在最外层把归属兄弟副本的 tools/call
+// 反代到属主实例执行。转发目标受兄弟副本白名单约束（见 SetSpillPeerProvider），共享密钥为空
+// 时相关跨副本能力关闭（安全默认）。
 
 const defaultPeerTimeout = 5000 * time.Millisecond
 
@@ -78,9 +75,6 @@ func SpillPeerTimeout() time.Duration {
 	return peerTimeout
 }
 
-// SpillOwner 从 id 解出归属 host:port；ok=false 表示旧式/无归属 id。
-func SpillOwner(id string) (hostPort string, ok bool) { return splitOwner(id) }
-
 // SpillPeerAllowed 返回 hostPort 是否为当前已知的兄弟副本之一（仅这些地址允许被代理）。
 // provider 未注册或返回空时返回 false（默认拒绝一切远端转发，防 SSRF/密钥外泄的安全默认）。
 func SpillPeerAllowed(hostPort string) bool {
@@ -90,59 +84,6 @@ func SpillPeerAllowed(hostPort string) bool {
 		}
 	}
 	return false
-}
-
-// LocalSpillExplore 是“本地-only” explore 执行器，由 spillexplore 包在 init 注入，
-// 避免 runtime 反向依赖工具包。内部端点只调用它、不再转发，从结构上保证单跳。
-var LocalSpillExplore func(id, op string, lineOffset, limit int, pattern, jqExpr string, depth, maxBytes int) (map[string]any, error)
-
-// spillExploreReq 是 /spill-explore 的请求体（对齐 SpillExplore 参数）。
-type spillExploreReq struct {
-	ID         string `json:"id"`
-	Op         string `json:"op"`
-	LineOffset int    `json:"lineOffset"`
-	Limit      int    `json:"limit"`
-	Pattern    string `json:"pattern"`
-	JQExpr     string `json:"jqExpr"`
-	Depth      int    `json:"depth"`
-	MaxBytes   int    `json:"maxBytes"`
-}
-
-// SpillExploreEndpoint 返回副本间内部 explore 端点：校验共享密钥后在本地执行 explore
-// （LocalSpillExplore），只回传小结果。共享密钥未配置时整端点禁用（404）。请求体设 1MB 上限。
-func SpillExploreEndpoint() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := SpillPeerToken()
-		if token == "" { // 特性未开启
-			http.NotFound(w, r)
-			return
-		}
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		got := r.Header.Get("X-Spill-Peer-Token")
-		if subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		var req spillExploreReq
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-			http.Error(w, "bad request", http.StatusBadRequest)
-			return
-		}
-		if LocalSpillExplore == nil {
-			http.Error(w, "local explore not wired", http.StatusInternalServerError)
-			return
-		}
-		res, err := LocalSpillExplore(req.ID, req.Op, req.LineOffset, req.Limit, req.Pattern, req.JQExpr, req.Depth, req.MaxBytes)
-		if err != nil {
-			http.Error(w, "spill resource not found", http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(res)
-	})
 }
 
 // NewSpillIDForOwnerTest 供其它包测试构造指定归属的 spill id。

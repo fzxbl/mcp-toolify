@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -91,4 +92,13 @@ func TestWithOwnerRoutingLocalCases(t *testing.T) {
 			t.Fatalf("case %d expected local, got %s", i, b)
 		}
 	}
+}
+
+func hostOf(t *testing.T, raw string) string {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %s: %v", raw, err)
+	}
+	return u.Host
 }

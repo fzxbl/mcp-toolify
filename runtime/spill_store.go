@@ -245,3 +245,17 @@ func SpillDownloadURLFor(id string) string {
 func NewSpillID() string {
 	return newSpillID()
 }
+
+// NewOwnedSpillID 生成带本实例归属（host:port）的 spill id，供 sysprobe 等外部包
+// 为自管的 spill 文件命名。多副本部署下，spill_explore 及外部工具据此把「本地未命中
+// 但归属为兄弟副本」的请求单跳代理到属主实例（见 spill_id.go / spill_peer.go）。
+// 未设置对外地址（stdio/未 SetSpillBaseURL）时退回纯随机 id，行为与单机一致。
+func NewOwnedSpillID() string {
+	return newSpillIDWithOwner(SpillSelfHostPort())
+}
+
+// SpillDir 返回框架 spill 文件的落盘目录。外部工具包（如 sysprobe）应把自管的
+// spill 文件写到该目录，以便与框架共用同一套 GC、下载端点与 spill_explore 解析。
+func SpillDir() string {
+	return spillStoreOrDefault().dir
+}

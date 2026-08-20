@@ -44,10 +44,17 @@ func SetSpillPeerProvider(fn func() []string) { runtime.SetSpillPeerProvider(fn)
 // 与 SetSpillPeerProvider 互为覆盖，后调用者生效。
 func SetSpillPeers(hosts []string) { runtime.SetSpillPeers(hosts) }
 
-// SpillExploreEndpoint 返回副本间内部 explore 端点（POST，共享密钥鉴权）。用 Handlers 挂载到
-// 既有 HTTP server 时，把它挂在 "/spill-explore" 路径即可让多副本 spill_explore 正常工作；
-// 用 Start 独立启动时该端点已自动注册。共享密钥（[spill].peer_token）未配置时端点返回 404。
-func SpillExploreEndpoint() http.Handler { return runtime.SpillExploreEndpoint() }
+// RegisterOwnerRouted 声明「工具按某 owned-id 参数路由」，供有状态工具接入分布式层。
+func RegisterOwnerRouted(toolName, paramName string) {
+	runtime.RegisterOwnerRouted(toolName, paramName)
+}
+
+// WithOwnerRouting 包裹 MCP handler：把归属兄弟副本的 tools/call 反代到属主 /mcp。
+// 挂载到既有 HTTP server 时套在 MCP handler 外层。
+func WithOwnerRouting(next http.Handler) http.Handler { return runtime.WithOwnerRouting(next) }
+
+// OwnerOf 解出 owned id 的属主 host:port；ok=false 表示旧式/无归属 id。
+func OwnerOf(id string) (string, bool) { return runtime.OwnerOf(id) }
 
 // Start 用给定 registrar 启动 MCP server，阻塞直到 ctx 取消或 server 退出。
 func Start(ctx context.Context, cfg Config, registrar Registrar) error {
