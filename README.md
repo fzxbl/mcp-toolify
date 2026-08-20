@@ -23,10 +23,11 @@ Built in Go, official MCP SDK, stdio + Streamable HTTP. Drop it into Cursor, Cla
 Most ways to expose Go logic as MCP tools mean hand-writing a wrapper per function: an input struct, a JSON schema, argument descriptions, a handler that unpacks args and packs results, plus registration boilerplate. It drifts from the real function the moment you touch it, and it says nothing about risk, size, or auth. mcp-toolify nails five things:
 
 - **1. Annotation-driven, zero boilerplate — the code *is* the spec.** Add `// mcp:tool` to a function's godoc and a standalone generator (`cmd/mcpgen`) emits a typed wrapper: input struct from the parameters, JSON-schema descriptions from `param:` lines, the tool description from the doc comment. Generated code calls your function directly — **no runtime reflection**, and the tool can never silently drift from the signature.
-- **2. Oversized results spill to disk — the model context never blows up.** Every tool return is measured; anything over a configurable token budget is written to a temp file and returned as an MCP resource link + short summary instead of a giant payload. A built-in companion tool, `spill_explore` (`read` / `grep` / `schema` / `jq` over json/jsonl/text), lets the agent explore the blob on demand and pull only the lines it needs. Cross-machine deployments get a direct download URL for free, and in a **multi-replica** setup `spill_explore` still works no matter which replica the call lands on: the producing replica's address is encoded in the spill id, so a local miss single-hops to that owner replica's internal endpoint and returns only the small explored result (opt-in, secret-guarded, allow-listed).
-- **3. Connection-level authorization, two layers.** Per-token read/write **risk ceilings** decide what a connection may ever do (and filter `tools/list` accordingly); `tools/call` additionally checks the **caller identity** against a per-risk allow-list. One agent can share a connection across many users, each still gated by who they are. Tools declare risk with `mcp:risk=low|medium|high` and write-intent with the `write` tag.
-- **4. Standalone *or* embedded — share one server.** Run it over stdio or HTTP as its own process, or get two `http.Handler`s and **mount onto an HTTP server you already have**, sharing the port and lifecycle. External, hand-written tools can be registered onto the same server alongside the generated ones (just register their risk metadata).
-- **5. No proprietary dependencies — clean, portable, auditable.** Only the official Go MCP SDK, `jsonschema-go`, `BurntSushi/toml`, and (for the built-in spill tool) `gojq`. The code generator additionally uses `golang.org/x/tools` + `yaml.v3`, pulled in only when you run codegen. Nothing else to trust.
+- **2. Oversized results spill to disk — the model context never blows up.** Every tool return is measured; anything over a configurable token budget is written to a temp file and returned as an MCP resource link + short summary instead of a giant payload. A built-in companion tool, `spill_explore` (`read` / `grep` / `schema` / `jq` over json/jsonl/text), lets the agent explore the blob on demand and pull only the lines it needs. Cross-machine deployments get a direct download URL for free, and in a **multi-replica** setup `spill_explore` still works no matter which replica the call lands on — it rides the stateful-tool routing below (the built-in, canonical example of that feature).
+- **3. Stateful tools across replicas — resources live on one replica, calls land anywhere.** Some tools produce a resource that only exists on the replica that created it (a spill blob, a live session, a long-running job, a probe handle). In a load-balanced deployment a follow-up call (read it, poll it, cancel it) can land on a *different* replica and miss. mcp-toolify solves this generically: encode the owning replica into the resource id, declare which argument carries that id with `RegisterOwnerRouted(tool, param)`, and a call-level middleware (`WithOwnerRouting`) transparently reverse-proxies the whole `tools/call` to the owning replica — re-authorized there, gated by a sibling allow-list, single-hop. Your tool code stays a plain local function; the framework handles the distribution.
+- **4. Connection-level authorization, two layers.** Per-token read/write **risk ceilings** decide what a connection may ever do (and filter `tools/list` accordingly); `tools/call` additionally checks the **caller identity** against a per-risk allow-list. One agent can share a connection across many users, each still gated by who they are. Tools declare risk with `mcp:risk=low|medium|high` and write-intent with the `write` tag.
+- **5. Standalone *or* embedded — share one server.** Run it over stdio or HTTP as its own process, or get two `http.Handler`s and **mount onto an HTTP server you already have**, sharing the port and lifecycle. External, hand-written tools can be registered onto the same server alongside the generated ones (just register their risk metadata).
+- **6. No proprietary dependencies — clean, portable, auditable.** Only the official Go MCP SDK, `jsonschema-go`, `BurntSushi/toml`, and (for the built-in spill tool) `gojq`. The code generator additionally uses `golang.org/x/tools` + `yaml.v3`, pulled in only when you run codegen. Nothing else to trust.
 
 Plus the machinery that makes the above reliable:
 
@@ -142,10 +143,9 @@ identity_headers = ["X-MCP-User"]   # ordered headers for caller identity; first
 
 [spill]
 max_result_tokens = 4000   # results above this estimate spill to disk; -1 disables
-# Optional multi-replica proxy (off unless peer_token is set):
-# peer_token     = "..."                # shared secret for the internal /spill-explore endpoint; empty => proxy off
+# Optional stateful-tool routing across replicas (off unless a sibling allow-list is provided):
 # peer_timeout_ms = 5000                # proxy call timeout; 0 => 5000
-# peer_hosts     = ["replica-a:8011"]   # static allowlist of sibling replicas that may be proxied to
+# peer_hosts      = ["replica-a:8011"]  # static allow-list of sibling replicas that may be proxied to
 
 [[tokens]]
 token = "..."          # Authorization: Bearer <token>
@@ -184,32 +184,45 @@ logid_header = "X-Log-Id"   # header to read the incoming logid from; omit => "X
 
 `HTTPLogID` takes the logid from that header (or generates one when absent), injects it into the request context, echoes it back in the same response header, and records it as the `logid` field of every audit record. When you run the built-in standalone server (`Start`/`Run` over HTTP) it also emits a per-request **access log** (`logid`, `method`, `path`, `status`, `cost`, `user`) through the same `Logger`, so a request can be traced across the access log and the audit log by its `logid`. When you mount the handlers into your own server (`Handlers`), no access log is added — the logid is still injected and echoed so your host's access log can correlate.
 
-## Multi-replica spill
+## Stateful tools across replicas
 
-By default a spill resource lives only on the disk of the replica that produced it, so in a load-balanced deployment a later `spill_explore` can land on a different replica and miss. mcp-toolify solves this with an owner-encoded id plus a single-hop proxy — no shared storage required:
+Most tools are stateless — any replica can serve any call. But some tools produce a resource that physically lives on the replica that created it: a spilled result on local disk, an interactive session, a long-running job or probe. In a load-balanced deployment a follow-up call (read the blob, poll the job, cancel the probe) can land on a *different* replica and miss. mcp-toolify makes such tools **stateful-aware** with an owner-encoded id plus a call-level routing middleware — no shared storage, no logic registration, your tool stays a plain local function:
 
-- The producing replica's own address is encoded into the spill id, derived from `Config.PublicBaseURL` (the same field that produces the direct download URL). Without a base URL, ids stay in the legacy random form and no proxying happens.
-- On a local miss, if the id names a remote owner that is on the allow-list, the receiving replica POSTs the explore request to the owner's internal `/spill-explore` endpoint and returns only the small explored result. The endpoint calls the local explorer only, so forwarding is structurally limited to a single hop.
-
-Security is opt-in and layered:
-
-- The endpoint is guarded by a shared secret (`peer_token`, constant-time compared). An empty secret disables the whole proxy and makes the endpoint return 404.
-- Forward targets are restricted to a live sibling-replica allow-list. Provide it statically via `peer_hosts`, or wire your own service discovery:
+- **Encode the owner into the id.** When a tool mints an id for a resource it owns, it embeds its own address (derived from `Config.PublicBaseURL`, the same field that produces the direct download URL). Without a base URL, ids stay in the legacy random form and no routing happens.
+- **Declare which argument carries the id.** Register the tool's routing parameter once, at init time:
 
   ```go
-  toolify.SetSpillPeerProvider(func() []string { return currentReplicaHostPorts() })
-  // or a static snapshot:
-  toolify.SetSpillPeers([]string{"replica-a:8011", "replica-b:8011"})
+  func init() {
+      // follow-up calls that take an owned id route to its owner replica
+      runtime.RegisterOwnerRouted("your.get_status", "job_id")
+      runtime.RegisterOwnerRouted("your.cancel",     "job_id")
+  }
   ```
 
-  An empty list (and no provider) denies all remote forwarding, preventing SSRF and secret leakage. Request and response bodies are size-capped.
+- **The middleware does the rest.** `WithOwnerRouting` inspects each incoming `tools/call`: if the declared argument holds an id owned by a *remote* sibling on the allow-list, it reverse-proxies the whole call to that owner's `/mcp` and streams the result back; otherwise it passes through to the local handler. Forwarding is capped to a single hop by a loop-guard header. The forwarded request is re-authorized on the owner replica, so routing grants no extra privilege.
 
-When you mount onto your own server, expose the endpoint with `mux.Handle("/spill-explore", toolify.SpillExploreEndpoint())`.
+The built-in `spill_explore` tool is the canonical example — it's registered exactly this way, which is why exploring a spilled result works no matter which replica the call lands on.
+
+Wire it up once, then let every stateful tool ride it:
+
+```go
+mux.Handle("/mcp", toolify.WithOwnerRouting(mcpH)) // wrap the MCP handler
+```
+
+Forward targets are restricted to a live sibling-replica allow-list. Provide it statically via `peer_hosts`, or wire your own service discovery:
+
+```go
+toolify.SetSpillPeerProvider(func() []string { return currentReplicaHostPorts() })
+// or a static snapshot:
+toolify.SetSpillPeers([]string{"replica-a:8011", "replica-b:8011"})
+```
+
+An empty list (and no provider) denies all remote forwarding, preventing SSRF — a call for a remote owner that isn't on the list is served locally (and simply misses) rather than proxied anywhere.
 
 ## Layout
 
-- `toolify.go` — public entry points: `Start`, `Handlers`, `Config`, `Logger`, `SetAuditLogger`, `RegisterToolMeta`.
-- `runtime/` — server wiring, authz, spill store, audit logging.
+- `toolify.go` — public entry points: `Start`, `Handlers`, `Config`, `Logger`, `SetAuditLogger`, `RegisterToolMeta`, `WithOwnerRouting`, `RegisterOwnerRouted`, `OwnerOf`.
+- `runtime/` — server wiring, authz, spill store, owner routing, audit logging.
 - `spillexplore/` — the built-in `spill_explore` tool.
 - `cmd/mcpgen/` — the code generator (`go run github.com/fzxbl/mcp-toolify/cmd/mcpgen`).
 - `cmd/listtools/` — dev helper to dump exposed tools + schemas.

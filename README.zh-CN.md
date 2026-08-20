@@ -23,10 +23,11 @@ Go 编写，官方 MCP SDK，支持 stdio 与 Streamable HTTP。可直接接入 
 把 Go 逻辑暴露成 MCP 工具，通常要为每个函数手写一层 wrapper：入参结构体、JSON schema、参数说明、拆包/打包的 handler，再加注册样板代码。这些代码一旦改动就会和真实函数脱节，而且完全没表达风险、体积、鉴权等信息。mcp-toolify 抓住了五点：
 
 - **1. 注解驱动、零样板——代码本身就是规范。** 在函数 godoc 上加 `// mcp:tool`，独立生成器（`cmd/mcpgen`）就产出类型化 wrapper：入参结构体来自形参，JSON schema 描述来自 `param:` 行，工具描述来自 doc 注释。生成代码直接调用你的函数——**运行期零反射**，工具永远不会和函数签名悄悄脱节。
-- **2. 超大返回值自动落盘——上下文窗口永不被撑爆。** 每个工具返回值都会估算体积；超过可配置的 token 阈值时，不再把大 payload 塞进上下文，而是落盘为临时文件并返回一个 MCP 资源链接 + 简短摘要。内置配套工具 `spill_explore`（对 json/jsonl/text 支持 `read` / `grep` / `schema` / `jq`）让 Agent 按需探索、只取需要的那几行。跨机部署还会自动给出一个可直连下载的 URL；**多副本**部署下，无论 `spill_explore` 落到哪个副本都能正常工作：产出该资源的副本地址会编码进 spill id，本地未命中时单跳代理到属主副本的内部端点，只回传探索后的小结果（默认关闭、共享密钥鉴权、白名单约束）。
-- **3. 连接级鉴权，两层校验。** 每个 token 有读/写**风险上限**，决定这条连接最多能做什么（`tools/list` 也据此过滤）；`tools/call` 再按**调用者身份**匹配分级白名单。一个 Agent 可以用同一条连接服务很多人，每个人仍按其身份受控。工具用 `mcp:risk=low|medium|high` 声明风险、用 `write` 标签声明写意图。
-- **4. 独立运行 *或* 嵌入复用——共用一个 server。** 既可作为独立进程以 stdio/HTTP 运行，也可拿到两个 `http.Handler`，**挂载到你已有的 HTTP server 上**，共用端口与生命周期。外部手写工具也能注册到同一个 server，与生成的工具并存（只需登记其风险元数据）。
-- **5. 零私有依赖——干净、可移植、可审计。** 只依赖官方 Go MCP SDK、`jsonschema-go`、`BurntSushi/toml`，以及内置落盘工具用到的 `gojq`。代码生成器额外用到 `golang.org/x/tools` 与 `yaml.v3`，仅在运行代码生成时才拉取。没有别的东西需要信任。
+- **2. 超大返回值自动落盘——上下文窗口永不被撑爆。** 每个工具返回值都会估算体积；超过可配置的 token 阈值时，不再把大 payload 塞进上下文，而是落盘为临时文件并返回一个 MCP 资源链接 + 简短摘要。内置配套工具 `spill_explore`（对 json/jsonl/text 支持 `read` / `grep` / `schema` / `jq`）让 Agent 按需探索、只取需要的那几行。跨机部署还会自动给出一个可直连下载的 URL；**多副本**部署下，无论 `spill_explore` 落到哪个副本都能正常工作——它复用了下面的「有状态工具路由」（也是该能力的内置范例）。
+- **3. 跨副本的有状态工具——资源只在某个副本上，调用却可能落到任意副本。** 有些工具会产出一个只存在于「创建它的那个副本」上的资源：一份落盘结果、一个活跃会话、一个长时任务、一个探针句柄。负载均衡部署下，后续调用（读它、轮询它、取消它）可能落到*别的*副本而未命中。mcp-toolify 用通用方式解决：把属主副本编码进资源 id，用 `RegisterOwnerRouted(tool, param)` 声明哪个入参携带该 id，调用级中间件 `WithOwnerRouting` 便会把整个 `tools/call` 透明反向代理到属主副本——在属主端重新鉴权、受兄弟副本白名单约束、单跳。你的工具代码依然是一个普通的本地函数，分布式由框架接管。
+- **4. 连接级鉴权，两层校验。** 每个 token 有读/写**风险上限**，决定这条连接最多能做什么（`tools/list` 也据此过滤）；`tools/call` 再按**调用者身份**匹配分级白名单。一个 Agent 可以用同一条连接服务很多人，每个人仍按其身份受控。工具用 `mcp:risk=low|medium|high` 声明风险、用 `write` 标签声明写意图。
+- **5. 独立运行 *或* 嵌入复用——共用一个 server。** 既可作为独立进程以 stdio/HTTP 运行，也可拿到两个 `http.Handler`，**挂载到你已有的 HTTP server 上**，共用端口与生命周期。外部手写工具也能注册到同一个 server，与生成的工具并存（只需登记其风险元数据）。
+- **6. 零私有依赖——干净、可移植、可审计。** 只依赖官方 Go MCP SDK、`jsonschema-go`、`BurntSushi/toml`，以及内置落盘工具用到的 `gojq`。代码生成器额外用到 `golang.org/x/tools` 与 `yaml.v3`，仅在运行代码生成时才拉取。没有别的东西需要信任。
 
 以及一批让上述能力可靠落地的机制：
 
@@ -142,10 +143,9 @@ identity_headers = ["X-MCP-User"]   # 调用人身份来源请求头（有序，
 
 [spill]
 max_result_tokens = 4000   # 估算超过该值的结果落盘；-1 关闭
-# 可选的多副本代理（未设置 peer_token 时关闭）：
-# peer_token     = "..."                # 内部 /spill-explore 端点的共享密钥；为空 => 关闭代理
+# 可选的跨副本有状态工具路由（未提供兄弟副本白名单时关闭）：
 # peer_timeout_ms = 5000                # 代理调用超时；0 => 5000
-# peer_hosts     = ["replica-a:8011"]   # 允许被代理的兄弟副本静态白名单
+# peer_hosts      = ["replica-a:8011"]  # 允许被代理的兄弟副本静态白名单
 
 [[tokens]]
 token = "..."          # Authorization: Bearer <token>
@@ -184,32 +184,45 @@ logid_header = "X-Log-Id"   # 读取入站 logid 的头名；省略 => "X-Log-Id
 
 `HTTPLogID` 从该头取 logid（缺失则自动生成），注入请求 ctx、回写同名响应头，并作为每条审计记录的 `logid` 字段。用内置独立 server 启动（`Start`/`Run` 走 HTTP）时，还会通过同一个 `Logger` 输出每请求一行的**接入层 access 日志**（`logid`、`method`、`path`、`status`、`cost`、`user`），从而可按 `logid` 在 access 日志与审计日志之间串联同一次请求。把 handler 挂载进你自己的 server（`Handlers`）时不添加 access 日志——但仍会注入并回写 logid，供宿主自己的 access 日志串联。
 
-## 多副本 spill
+## 跨副本的有状态工具
 
-默认情况下，spill 资源只落在产出它的副本本地磁盘上，所以在负载均衡部署中，后续的 `spill_explore` 可能被路由到别的副本而本地未命中。mcp-toolify 用「id 编码属主 + 单跳代理」解决这个问题，无需共享存储：
+大多数工具是无状态的——任意副本都能服务任意调用。但有些工具会产出一个只物理存在于「创建它的那个副本」上的资源：落盘在本地磁盘的结果、一个交互式会话、一个长时任务或探针。负载均衡部署下，后续调用（读那份 blob、轮询任务、取消探针）可能落到*别的*副本而未命中。mcp-toolify 用「id 编码属主 + 调用级路由中间件」让这类工具**具备有状态感知**——无需共享存储，无需注册任何逻辑，你的工具依然是一个普通的本地函数：
 
-- 产出该资源的副本地址会编码进 spill id，来源于 `Config.PublicBaseURL`（也是生成直连下载 URL 的那个字段）。未设置基础地址时，id 保持旧式随机形态，不做任何代理。
-- 本地未命中时，若 id 指向的属主副本在白名单内，则接收请求的副本把 explore 请求 POST 到属主副本的内部 `/spill-explore` 端点，只回传探索后的小结果。该端点只调用本地探索器，从结构上保证转发仅一跳。
-
-安全默认、分层可选：
-
-- 端点由共享密钥（`peer_token`，常量时间比较）保护。密钥为空则整套代理关闭、端点返回 404。
-- 转发目标被约束在实时的兄弟副本白名单内。可用 `peer_hosts` 静态提供，或对接你自己的服务发现：
+- **把属主编码进 id。** 工具为自己拥有的资源生成 id 时，会把自身地址嵌进去（来源于 `Config.PublicBaseURL`，也是生成直连下载 URL 的那个字段）。未设置基础地址时，id 保持旧式随机形态，不做任何路由。
+- **声明哪个入参携带该 id。** 在 init 时注册一次工具的路由参数：
 
   ```go
-  toolify.SetSpillPeerProvider(func() []string { return currentReplicaHostPorts() })
-  // 或静态快照：
-  toolify.SetSpillPeers([]string{"replica-a:8011", "replica-b:8011"})
+  func init() {
+      // 携带属主 id 的后续调用会路由到属主副本
+      runtime.RegisterOwnerRouted("your.get_status", "job_id")
+      runtime.RegisterOwnerRouted("your.cancel",     "job_id")
+  }
   ```
 
-  白名单为空（且未注册 provider）则拒绝一切远端转发，防止 SSRF 与密钥外泄。请求与响应体均有大小上限。
+- **其余交给中间件。** `WithOwnerRouting` 检查每个进来的 `tools/call`：若声明的入参持有一个属于*远端*白名单兄弟副本的 id，就把整个调用反向代理到该属主的 `/mcp` 并把结果流式回传；否则透传给本地 handler。通过一个防环 header，转发被限制为单跳。被转发的请求会在属主副本上**重新鉴权**，因此路由不会带来任何额外权限。
 
-用 `Handlers` 挂载到自己的 server 时，用 `mux.Handle("/spill-explore", toolify.SpillExploreEndpoint())` 暴露该端点。
+内置的 `spill_explore` 就是这套机制的范例——它正是这样注册的，所以无论探索落到哪个副本都能正常工作。
+
+接一次线，之后每个有状态工具都能复用：
+
+```go
+mux.Handle("/mcp", toolify.WithOwnerRouting(mcpH)) // 包住 MCP handler
+```
+
+转发目标被约束在实时的兄弟副本白名单内。可用 `peer_hosts` 静态提供，或对接你自己的服务发现：
+
+```go
+toolify.SetSpillPeerProvider(func() []string { return currentReplicaHostPorts() })
+// 或静态快照：
+toolify.SetSpillPeers([]string{"replica-a:8011", "replica-b:8011"})
+```
+
+白名单为空（且未注册 provider）则拒绝一切远端转发，防止 SSRF——一个指向不在白名单内的远端属主的调用会在本地服务（并直接未命中），而不会被代理到任何地方。
 
 ## 目录结构
 
-- `toolify.go` —— 对外入口：`Start`、`Handlers`、`Config`、`Logger`、`SetAuditLogger`、`RegisterToolMeta`。
-- `runtime/` —— server 装配、鉴权、落盘存储、审计日志。
+- `toolify.go` —— 对外入口：`Start`、`Handlers`、`Config`、`Logger`、`SetAuditLogger`、`RegisterToolMeta`、`WithOwnerRouting`、`RegisterOwnerRouted`、`OwnerOf`。
+- `runtime/` —— server 装配、鉴权、落盘存储、属主路由、审计日志。
 - `spillexplore/` —— 内置的 `spill_explore` 工具。
 - `cmd/mcpgen/` —— 代码生成器（用 `go run github.com/fzxbl/mcp-toolify/cmd/mcpgen` 运行）。
 - `cmd/listtools/` —— 打印已暴露工具与 schema 的调试小工具。
