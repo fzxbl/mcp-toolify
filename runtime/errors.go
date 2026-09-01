@@ -12,3 +12,11 @@ func ToolError(err error) *mcp.CallToolResult {
 		Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
 	}
 }
+
+// ToolText 构造一个成功态的纯文本工具结果，供插件自注册的 MCP 工具使用
+// （TextResult 是链上的 *Result 形式，这里要的是 handler 直接返回的 SDK 结果）。
+func ToolText(text string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: text}},
+	}
+}

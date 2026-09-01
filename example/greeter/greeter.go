@@ -1,5 +1,9 @@
-// Package greeter is a tiny example of tools exposed via mcp-toolify.
-// Add `// mcp:tool` to a function's godoc and run `go generate` to expose it.
+// Package greeter 是用 mcp-toolify 暴露工具的最小示例。
+// 在函数 godoc 上加 `// mcp:tool` 再跑 `go generate`，它就成了一个 MCP 工具。
+//
+// labels 的 key 语义由部署方的配置解释（基座不解释）：本示例沿用
+// capability / risk 两个 key，与 example/conf/mcp.toml 里的 token 准入、
+// 配额规则、二次确认规则一致。
 package greeter
 
 import "fmt"
@@ -10,7 +14,7 @@ import "fmt"
 // param: excited — 是否在结尾加感叹号
 //
 // mcp:tool
-// mcp:tags=read
+// mcp:labels=capability=read,risk=none
 func Greet(name string, excited bool) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("name is required")
@@ -28,6 +32,31 @@ func Greet(name string, excited bool) (string, error) {
 // param: b — 第二个加数
 //
 // mcp:tool
+// mcp:labels=capability=read,risk=none
 func AddNumbers(a int, b int) (sum int) {
 	return a + b
+}
+
+// Shout 把一句话改成全大写（示例里的「高危写操作」）。
+//
+// 它本身当然是无害的，标成 capability=write,risk=high 只是为了让示例真的走一遍
+// 配额与二次确认：example/conf/mcp.toml 里的 [[quota.rules]] 与 [confirm] 都按
+// 这两个 label 管辖，把它换成你自己那个真会改线上状态的函数即可。
+//
+// param: text — 要改写的文本
+//
+// mcp:tool
+// mcp:labels=capability=write,risk=high
+func Shout(text string) (string, error) {
+	if text == "" {
+		return "", fmt.Errorf("text is required")
+	}
+	out := make([]rune, 0, len(text))
+	for _, r := range text {
+		if r >= 'a' && r <= 'z' {
+			r -= 'a' - 'A'
+		}
+		out = append(out, r)
+	}
+	return string(out), nil
 }

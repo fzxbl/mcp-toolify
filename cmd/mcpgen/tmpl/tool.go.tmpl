@@ -28,7 +28,7 @@ func {{ .HandlerName }}(ctx context.Context, req *mcp.CallToolRequest, in {{ .In
 		return runtime.ToolError(callErr), {{ .OutputZero }}, nil
 	}
 {{- end }}
-	return runtime.MaybeSpill("{{ .ToolName }}", {{ .SpillExpr }}, {{ .OutputExpr }})
+	return nil, {{ .OutputExpr }}, nil
 }
 
 func register_{{ .HandlerName }}(s *mcp.Server) {
@@ -44,9 +44,13 @@ func register_{{ .HandlerName }}(s *mcp.Server) {
 
 func Register_{{ .PkgIdent }}(s *mcp.Server, opts runtime.RegisterOptions) {
 {{- range .Tools }}
-	if opts.Allow("{{ $.PkgName }}", []string{ {{ .TagsLit }} }) {
+	if opts.Allow("{{ $.PkgName }}", {{ .LabelsLit }}) {
 		register_{{ .HandlerName }}(s)
-		runtime.RegisterMeta(runtime.ToolMeta{Name: "{{ .ToolName }}", Capability: {{ .CapabilityLit }}, Risk: {{ .RiskLit }}})
+		runtime.RegisterTool(runtime.ToolInfo{
+			Name:   "{{ .ToolName }}",
+			Pkg:    "{{ $.PkgName }}",
+			Labels: {{ .LabelsLit }},
+		})
 	}
 {{- end }}
 }

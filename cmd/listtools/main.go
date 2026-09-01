@@ -6,13 +6,13 @@
 //
 // 用法：
 //
-//	go run ./cmd/listtools                      # 详细：name + desc + 参数
-//	go run ./cmd/listtools -short               # 紧凑：每行一个工具
-//	go run ./cmd/listtools -grep get_item        # name 子串过滤
-//	go run ./cmd/listtools -enable orders       # 包过滤
-//	go run ./cmd/listtools -tags read           # tag 过滤
-//	go run ./cmd/listtools -json                # 完整 JSON（含 schema）
-//	go run ./cmd/listtools -call orders.get_item -args '{"group":"g1","id":"foo"}'
+//	go run ./cmd/listtools                             # 详细：name + desc + schema
+//	go run ./cmd/listtools -short                      # 紧凑：每行一个工具、不打 schema
+//	go run ./cmd/listtools -grep greet                  # name 子串过滤
+//	go run ./cmd/listtools -enable greeter              # 包过滤
+//	go run ./cmd/listtools -match capability=write      # label selector 过滤
+//	go run ./cmd/listtools -json                        # 完整 JSON（含 schema）
+//	go run ./cmd/listtools -call greeter.greet -args '{"name":"world","excited":true}'
 package main
 
 import (
@@ -23,6 +23,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -33,7 +34,7 @@ import (
 func main() {
 	var (
 		enable  = flag.String("enable", "", "包白名单，逗号分隔；空=全部")
-		tags    = flag.String("tags", "", "tag 过滤，逗号分隔；空=全部")
+		match   = flag.String("match", "", "label selector 过滤（如 capability=write）；空=全部")
 		short   = flag.Bool("short", false, "紧凑输出：每行一个工具，不打印 schema")
 		jsonOut = flag.Bool("json", false, "JSON 完整输出（包括 schema）")
 		grep    = flag.String("grep", "", "只显示 name 包含该子串的工具")
@@ -43,10 +44,14 @@ func main() {
 	flag.Parse()
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "listtools", Version: "0"}, nil)
-	tools.RegisterAll(srv, runtime.RegisterOptions{
+	// 必须先 Compile：-match 写错语法时要报错退出，而不是静默按「不过滤」跑出
+	// 一份和用户预期不符的工具清单。
+	opts, err := runtime.RegisterOptions{
 		Enable: splitCSV(*enable),
-		Tags:   splitCSV(*tags),
-	})
+		Match:  *match,
+	}.Compile()
+	must(err)
+	tools.RegisterAll(srv, opts)
 
 	srvT, cliT := mcp.NewInMemoryTransports()
 	go srv.Run(context.Background(), srvT)
@@ -131,9 +136,25 @@ func oneLine(s string, max int) string {
 		s = s[:i]
 	}
 	if len(s) > max {
-		s = s[:max] + "..."
+		// max 是字节数，中文描述在这里会被切在一个 rune 中间，输出整体变成非法 UTF-8
+		// （实测 greeter.shout 的中文描述就会让 -short 的输出解不出来）。把尾部那个
+		// 残缺 rune 去掉再拼省略号。
+		s = string(trimPartialRune([]byte(s[:max]))) + "..."
 	}
 	return s
+}
+
+// trimPartialRune 去掉字节切片末尾那个被截断的不完整 rune。
+// 最多回退 utf8.UTFMax-1 字节：一个合法 rune 不会更长，再往前就该是完整字符了。
+func trimPartialRune(b []byte) []byte {
+	for i := 0; i < utf8.UTFMax-1 && len(b) > 0; i++ {
+		r, size := utf8.DecodeLastRune(b)
+		if r != utf8.RuneError || size > 1 {
+			return b
+		}
+		b = b[:len(b)-1]
+	}
+	return b
 }
 
 func callTool(sess *mcp.ClientSession, name, argsJSON string) {

@@ -10,109 +10,77 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Config controls server startup behavior.
+// Config 控制 server 的启动行为。只保留基座关心的项：
+// 监听、对外地址、配置文件、工具注册期过滤、必需插件、兄弟副本白名单。
+// spill 阈值、审计 header 这类能力相关配置由对应插件自己从 ConfigPath 解析。
 type Config struct {
-	Transport string   // "stdio" | "http"
-	Addr      string   // http listen addr，例如 ":8080"；为空时由系统分配端口
-	Enable    []string // package-name whitelist
-	Tags      []string // tag whitelist
-
+	// Addr 是 HTTP 监听地址，例如 ":8080"；为空时由系统分配端口。
+	Addr string
 	// PublicBaseURL 是 agent 侧可直连的对外基础地址（如 http://host:8011）。
-	// 跨机部署时必须设置，spill 下载 URL 会基于它拼接；为空时回退到实际监听地址
-	// （仅适用于同机/本地场景）。
+	// 跨机多副本部署时必须设置：有归属 id 与 owner 路由都靠它判断「本副本是谁」；
+	// 为空时回退到实际监听地址（仅同机/本地场景可用）。
 	PublicBaseURL string
-
-	// ConfigPath 指向包含 [spill] 与 [[tokens]]/[risk_allowlist] 段的 TOML 文件。
-	// 为空时：spill 阈值用默认值；若 AuthzEnabled=true 则启动报错（鉴权必须有配置）。
+	// ConfigPath 指向含 [[tokens]] 等段的 TOML 文件。基座 token 鉴权必须配置，
+	// 为空即启动失败。
 	ConfigPath string
-
-	// SpillDir 是大返回结果落盘目录。为空时用 <os.TempDir>/mcp-toolify/spill。
-	SpillDir string
-
-	// AuthzEnabled 为 true 时（仅 http 生效）启用连接级能力 + 调用级风险鉴权，
-	// 配置来自 ConfigPath。默认关闭。
-	AuthzEnabled bool
+	// Enable 是工具注册期的包名白名单，空表示不过滤。
+	Enable []string
+	// Match 是工具注册期的 label selector，空表示不过滤；语法错误即启动失败。
+	Match string
+	// RequiredPlugins 声明必须在场的插件名，缺失即启动失败。
+	// 全插件化之后基座不认识「审计」「鉴权」这些概念，忘装插件就是静默放开，
+	// 这个声明是唯一的补偿手段。也可写在配置文件的同名顶层键里（两者取并集）。
+	RequiredPlugins []string `toml:"required_plugins"`
+	// Peers 是静态兄弟副本白名单（host:port），供 owner 路由校验反代目标。
+	// 多副本部署通常改用 SetPeerProvider 对接服务发现。
+	Peers []string
 }
 
-// Registrar is the function generated tools expose (typically tools.RegisterAll).
+// Registrar 是生成代码暴露的注册函数类型（通常是生成的 tools.RegisterAll）。
 type Registrar func(s *mcp.Server, opts RegisterOptions)
 
-// Run starts the MCP server with the given registrar.
-//
-// 启动后会向标准日志（log 包）打印监听信息：
-//   - stdio：打印 "MCP server running on stdio"
-//   - http：打印 "MCP server listening on http://<addr>" （含实际端口）
-func Run(ctx context.Context, cfg Config, registrar Registrar) error {
-	s := mcp.NewServer(&mcp.Implementation{
-		Name:    "mcp-toolify",
-		Version: "0.1.0",
-	}, nil)
-
-	registrar(s, RegisterOptions{Enable: cfg.Enable, Tags: cfg.Tags})
-	InitSpillStore(ctx, cfg.SpillDir, spillTTLConfig{})
-	InitSpillConfig(cfg.ConfigPath)
-	InitAuditConfig(cfg.ConfigPath)
-	InitLogConfig(cfg.ConfigPath)
-	RegisterSpillResource(s)
-	runStartupHooks(ctx)
-	s.AddReceivingMiddleware(LoggingMiddleware())
-
-	switch cfg.Transport {
-	case "", "stdio":
-		log.Printf("MCP server running on stdio (enable=%v tags=%v)", cfg.Enable, cfg.Tags)
-		return s.Run(ctx, &mcp.StdioTransport{})
-	case "http":
-		return runHTTP(ctx, cfg, s)
-	default:
-		return fmt.Errorf("unknown transport %q", cfg.Transport)
+// Start 校验插件、组装链、挂载路由并阻塞运行 HTTP server，直到 ctx 取消或 server 退出。
+// 退出前执行插件注册的 OnStop 钩子。
+func (r *Registry) Start(ctx context.Context) error {
+	// 清理过的 Registry 不得再启动（含「listen 失败 → 换端口用同一个 Registry 重试」
+	// 这条很自然的宿主写法）：那会起一个插件已被清理的降级服务。理由见 checkStopped。
+	if err := r.checkStopped(); err != nil {
+		return err
 	}
-}
-
-func runHTTP(ctx context.Context, cfg Config, s *mcp.Server) error {
-	addr := cfg.Addr
+	addr := r.cfg.Addr
 	if addr == "" {
 		addr = ":0"
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
+		// 端口占用同样是「起不来」：插件在 Install 里起的协程/连接池必须回收，
+		// 否则宿主里一次端口冲突就留下一组永不退出的协程。RunStop 幂等。
+		r.RunStop(context.Background())
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
+	defer ln.Close()
 
 	// 对外可直连的基础地址：优先用显式配置的 PublicBaseURL（跨机部署必填），
-	// 否则回退到实际监听地址（仅同机/本地场景可用）。
-	base := cfg.PublicBaseURL
-	if base == "" {
-		base = "http://" + ln.Addr().String()
+	// 否则回退到实际监听地址（仅同机/本地场景可用）。必须在 build 之前设置，
+	// 插件在 Install 之后可能已经据此拼过 URL。
+	if r.cfg.PublicBaseURL == "" {
+		SetPublicBaseURL("http://" + ln.Addr().String())
 	}
-	SetSpillBaseURL(base)
+
+	handler, err := r.build()
+	if err != nil {
+		return err
+	}
 
 	mux := http.NewServeMux()
-	mux.Handle(spillDownloadPath, SpillDownloadHandler()) // /spill/<id> 大结果下载
-
-	var handler http.Handler
-	if cfg.AuthzEnabled {
-		if cfg.ConfigPath == "" {
-			return fmt.Errorf("AuthzEnabled=true but ConfigPath is empty")
-		}
-		authzCfg, err := LoadAuthzConfig(cfg.ConfigPath)
-		if err != nil {
-			return fmt.Errorf("load mcp authz config: %w", err)
-		}
-		if err := authzCfg.Validate(); err != nil {
-			return fmt.Errorf("invalid mcp authz config: %w", err)
-		}
-		handler = NewAuthzHandler(s, NewAuthz(authzCfg))
-	} else {
-		handler = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, nil)
+	for pattern, h := range r.Routes() {
+		mux.Handle(pattern, h)
 	}
-	// owner 路由在最外层：把归属兄弟副本的 tools/call 反代到属主 /mcp。
-	mux.Handle("/", HTTPAuditHeaders(WithOwnerRouting(handler)))
-	// logid 在最外层解析/生成（注入 ctx 供审计与 access 日志共用），其内是内置接入层
-	// access 日志：独立 Run() 启动时提供一份 service 日志，与审计日志靠同一 logid 串联。
-	srv := &http.Server{Handler: HTTPLogID(httpAccessLog(mux))}
+	mux.Handle("/", handler)
+	srv := &http.Server{Handler: mux}
 
-	log.Printf("MCP server listening on http://%s (enable=%v tags=%v, spill base=%s)",
-		ln.Addr().String(), cfg.Enable, cfg.Tags, base)
+	log.Printf("[mcp] server listening on http://%s (enable=%v match=%q public=%s)",
+		ln.Addr().String(), r.cfg.Enable, r.cfg.Match, PublicBaseURL())
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(ln) }()
@@ -121,8 +89,11 @@ func runHTTP(ctx context.Context, cfg Config, s *mcp.Server) error {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithCancel(context.Background())
 		cancel()
-		return srv.Shutdown(shutdownCtx)
+		err := srv.Shutdown(shutdownCtx)
+		r.RunStop(context.Background())
+		return err
 	case err := <-errCh:
+		r.RunStop(context.Background())
 		if err == http.ErrServerClosed {
 			return nil
 		}

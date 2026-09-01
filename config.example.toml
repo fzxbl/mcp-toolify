@@ -1,110 +1,294 @@
 # mcp-toolify example configuration / mcp-toolify 示例配置
 #
-# EN: Pass this file's path via Config.ConfigPath. Every section is OPTIONAL:
-#     with an empty/absent ConfigPath the server runs with safe defaults
-#     (built-in spill threshold, no audit headers, authz disabled).
+# EN: Pass this file's path via Config.ConfigPath. The [[tokens]] section is
+#     MANDATORY: token authz is always on, and a server with no tokens refuses
+#     to start rather than exposing an unauthenticated MCP endpoint.
+#     The bundled plugins (audit, spill) read their own sections from the same
+#     file; add one as you install the plugin. So does an external plugin you
+#     install yourself (quota / approval live outside this repo) — the claim
+#     check treats it exactly like a built-in one.
 #     Copy to e.g. mcp.toml and edit. Never commit real tokens.
-# 中: 通过 Config.ConfigPath 传入本文件路径。所有段都是可选的：ConfigPath 为空时
-#     以安全默认运行（内置 spill 阈值、不额外记录 header、关闭鉴权）。
+# 中: 通过 Config.ConfigPath 传入本文件路径。[[tokens]] 段是**必填**的：token 鉴权
+#     始终启用，一个 token 都没有时服务直接启动失败，而不是起一个无鉴权的 MCP 端点。
+#     随仓插件（audit、spill）从同一个文件读自己的段落，装插件时再加；你自己装的外置
+#     插件同理（配额 / 二次确认在本仓库之外）——配置认领制对内置与外置插件一视同仁。
 #     复制为 mcp.toml 后修改；切勿提交真实 token。
+# EN: A config that IS actually loaded together with the plugin lives in
+#     example/conf/mcp.toml (see example/cmd/server/main.go for the assembly).
+# 中: 一份真的会连插件一起加载的配置见 example/conf/mcp.toml
+#     （装配代码见 example/cmd/server/main.go）。
 
 # ── Identity headers (top-level key; must precede any [section]) ────────────
-# EN: Ordered list of request headers carrying the caller identity used for
-#     per-caller authz and the audit "user" field. Resolved front-to-back: the
-#     first header with a non-empty value wins. Injected by a trusted gateway,
-#     trusted as-is. Omit / empty => ["X-MCP-User"].
-# 中: 参与按人鉴权与审计（user 字段）的调用人身份来源请求头列表（有序）：从前到后取
-#     第一个非空的头值。由可信网关注入，服务端直接信任其值。省略/留空 => ["X-MCP-User"]。
+# EN: Ordered list of request headers carrying the caller identity. Resolved
+#     front-to-back: the first header with a non-empty value wins, and lands in
+#     Subject.ID. The base only resolves the identity; per-person authorization
+#     is a plugin's job (data source is usually an on-call roster / mail group /
+#     approval system). Omit / empty => ["X-MCP-User"].
+#     These headers are IGNORED unless trust_identity_header = true below.
+# 中: 调用人身份来源请求头列表（有序）：从前到后取第一个非空的头值，填入 Subject.ID。
+#     基座只负责解析身份，「这个人能做什么」由插件判定（数据源通常是值班表、邮件组或
+#     外部审批系统）。省略/留空 => ["X-MCP-User"]。
+#     未开启下面的 trust_identity_header 时，这些头会被**忽略**。
 #     （顶层键，必须写在任何 [段] 之前。）
 identity_headers = ["X-MCP-User"]
 
-# ── Spill: auto-offload large tool results to disk ─────────────────────────
-# EN: Results whose estimated token size exceeds this threshold are stored as a
-#     spill:// resource instead of inlined, explored on demand via spill_explore.
-#     0 / omitted => built-in default (4000). -1 disables auto-spill.
-# 中: 估算 token 数超过该阈值的结果不再内联，改存为 spill:// 资源，由 spill_explore
-#     按需探索。0/缺省 => 内置默认 4000；-1 关闭自动落盘。
-[spill]
-max_result_tokens = 4000
+# ── Trusting the client-supplied identity header (top-level key) ────────────
+# EN: Default false = DISTRUST. A client can put any name in a request header,
+#     so by default the base ignores identity_headers entirely and Subject.ID is
+#     empty. Turn this on ONLY when the endpoint is fronted by a trusted gateway
+#     that authenticates the human and overwrites these headers. Otherwise bind a
+#     fixed identity per token via [[tokens]].identity below.
+# 中: 默认 false = 不信任。请求头里的名字是调用方自己填的，因此默认完全忽略
+#     identity_headers，Subject.ID 恒为空。仅当端点前面有可信网关、由网关完成人的
+#     认证并**覆写**这些头时才打开；否则请用下面的 [[tokens]].identity 给 token
+#     绑定固定身份。
+# trust_identity_header = true
 
-# EN: Multi-replica proxy (OPTIONAL). In a multi-replica deployment a spill
-#     resource lives only on the disk of the replica that produced it. If a
-#     later spill_explore lands on a different replica, that replica single-hops
-#     to the owner replica's internal /spill-explore endpoint (the owner address
-#     is encoded in the spill id) and returns just the small explored result.
-#     - peer_token: shared secret guarding the internal endpoint. Empty => the
-#       whole proxy is OFF and the endpoint returns 404 (safe default).
-#     - peer_timeout_ms: proxy call timeout; 0 => 5000.
-#     - peer_hosts: optional static allowlist of sibling replica host:port that
-#       may be proxied to. Prefer wiring live service discovery via
-#       SetSpillPeerProvider instead of hardcoding here; empty and no provider
-#       => no remote forwarding is allowed at all (prevents SSRF/token leak).
-#     The owner address embedded in ids comes from SetSpillBaseURL (set by the
-#     host process); leave it unset to keep legacy ids with no proxying.
-# 中: 多副本代理（可选）。多副本部署下，spill 资源只落在产出它的副本本地。若后续
-#     spill_explore 被路由到别的副本本地未命中，该副本会据 id 里编码的属主地址单跳代理到
-#     属主副本的内部 /spill-explore 端点，只取回探索后的小结果。
-#     - peer_token：内部端点的共享密钥；为空 => 整套代理关闭、端点返回 404（安全默认）。
-#     - peer_timeout_ms：代理调用超时；0 => 5000。
-#     - peer_hosts：可选的静态兄弟副本白名单（host:port）；推荐改用 SetSpillPeerProvider
-#       对接实时服务发现，不要在此硬编码；为空且未注册 provider => 不允许任何远端转发
-#       （防 SSRF/密钥外泄）。
-#     id 中编码的属主地址来自 SetSpillBaseURL（由宿主进程设置）；不设置则保持旧式 id 且不代理。
-# peer_token = "replace-with-a-random-secret"
-# peer_timeout_ms = 5000
-# peer_hosts = ["replica-a.internal:8011", "replica-b.internal:8011"]
 
-# ── Audit: record chosen request headers into the audit log ────────────────
-# EN: Pure audit, independent of authz. Each listed header becomes its own audit
-#     field keyed by the lowercased header name (e.g. X-Tenant-Id -> x-tenant-id); a
-#     missing header is logged as "-". Omit the section to record none.
-#     Values are trusted as-is: enable only behind a trusted gateway, and do NOT
-#     list credential headers such as Authorization or Cookie.
-# 中: 纯审计，与鉴权无关。列出的每个 header 会成为独立审计字段，字段名为 header 名小写
-#     （如 X-Tenant-Id -> x-tenant-id）；请求未带该 header 时记为 "-"。省略该段则不额外记录。
-#     header 值被直接信任：仅应在可信网关之后启用，且不要列入 Authorization、Cookie 等凭据类 header。
-[audit]
-headers = ["X-Tenant-Id", "X-Client-Id"]
+# ── Required plugins (top-level key) ───────────────────────────────────────
+# EN: Plugins that MUST be installed; a missing one fails startup. After full
+#     pluginization the base no longer knows what "auditing" means — forgetting to
+#     install the audit plugin would silently drop auditing, so the deployment
+#     declares it here. Merged with Config.RequiredPlugins (union).
+# 中: 必须在场的插件名，缺失即启动失败。全插件化之后基座不认识「审计」这种概念，
+#     忘装插件就是静默失效，因此由部署方在此声明。与 Config.RequiredPlugins 取并集。
+# required_plugins = ["spill"]
 
 # ── Log: request id (logid) for correlation ────────────────────────────────
 # EN: Each HTTP request gets a logid — taken from this header if present, else
 #     generated — injected into ctx, echoed back in the same response header, and
-#     recorded in both the audit log and (for standalone Run) the built-in access
-#     log, so one request can be traced across both. Omit => default "X-Log-Id".
-# 中: 每个 HTTP 请求都有一个 logid：优先取该头，缺失则自动生成；注入 ctx、回写同名响应头，
-#     并同时写入审计日志与（独立 Run 时的）内置接入层 access 日志，从而按 logid 串联同一次请求。
-#     省略 => 默认 "X-Log-Id"。
+#     visible to plugins as Call.LogID. Omit => default "X-Log-Id".
+# 中: 每个 HTTP 请求都有一个 logid：优先取该头，缺失则自动生成；注入 ctx、回写同名
+#     响应头，并以 Call.LogID 暴露给插件。省略 => 默认 "X-Log-Id"。
 [log]
 logid_header = "X-Log-Id"
 
-# ── Authorization (HTTP only; requires Config.AuthzEnabled = true) ──────────
-# EN: Each token sets the max read/write RISK level (none|low|medium|high) this
-#     connection may ever reach. Omit `read` (or `write`) to forbid that op.
-#     name: token purpose, written to the audit log's token_name field (required).
-#     applicant: requester id, kept for traceability, not logged (required).
-#     A token missing name or applicant makes startup fail.
-# 中: 每个 token 设定这条连接可达的读/写风险上限（none|low|medium|high）。省略 `read`
-#     （或 `write`）表示禁止该类操作。name：token 用途，写入审计日志 token_name 字段（必填）；
-#     applicant：申请人，仅留档追溯、不进日志（必填）。缺 name 或 applicant 会导致启动失败。
+# ── Token authorization (MANDATORY) ────────────────────────────────────────
+# EN: Each token carries `allow` / `deny` k8s-style label selectors matched
+#     against a tool's labels (plus the built-in projections name / pkg).
+#     - deny wins over allow; matching neither means DENY (deny-by-default).
+#     - The same selectors drive both `tools/list` visibility and `tools/call`
+#       execution — there is no second code path to get out of sync.
+#     - Multiple selectors in one list are OR'ed; commas inside one selector are
+#       AND'ed. Operators: = != in(...) notin(...) key !key
+#     - `deny = ["!risk", "!capability"]` is a NECESSARY backstop: k8s semantics
+#       make != / notin match tools that LACK the key, so a new tool whose author
+#       forgot to label it would otherwise be allowed through.
+#     - name: token purpose, exposed to plugins as the channel id (an audit
+#       plugin records it) (required).
+#     - applicant: requester id, kept for traceability, not logged (required).
+#     - identity: optional, "fixed:<id>" pins Subject.ID for this token and wins
+#       over every request header (even with trust_identity_header on). Use it for
+#       service accounts / robots. Any other syntax fails startup.
+#     A token missing token / name / applicant, a duplicate token or name, or a
+#     malformed selector all make startup fail.
+# 中: 每个 token 带 `allow` / `deny` 两组 k8s 风格 label selector，判据是工具的
+#     labels（外加基座投影的 name / pkg）。
+#     - deny 优先于 allow；两者都不命中即拒绝（deny-by-default）。
+#     - 同一套 selector 同时决定 `tools/list` 可见性与 `tools/call` 可执行性，
+#       不存在两套会走偏的逻辑。
+#     - 一个列表里的多条 selector 之间是 OR，单条内部逗号是 AND。
+#       操作符：= != in(...) notin(...) key !key
+#     - `deny = ["!risk", "!capability"]` 是**必要**兜底：k8s 语义下 != / notin 对
+#       「不存在该 key」的工具也算匹配成功，忘记标注的新工具否则会被放行。
+#     - name：token 用途，作为接入通道标识暴露给插件（审计插件会记它）（必填）。
+#     - applicant：申请人，仅留档追溯、不进日志（必填）。
+#     - identity：可选，写成 "fixed:<id>" 即把该 token 的 Subject.ID 固定为该值，
+#       优先级高于任何请求头（即使开了 trust_identity_header）。适合服务号/机器人。
+#       写成其他形式一律启动失败。
+#     缺 token/name/applicant、token 或 name 重复、selector 语法错误都会导致启动失败。
+# EN: token is sent as `Authorization: Bearer <token>`.
+# 中: token 以 `Authorization: Bearer <token>` 传入。
 [[tokens]]
-token = "replace-with-a-random-secret"   # EN: sent as Authorization: Bearer <token> / 中: 以 Authorization: Bearer <token> 传入
+token = "replace-with-a-random-secret"
 name = "readonly-agent"
 applicant = "your-id"
-read = "medium"        # EN: max read risk; omit to disallow reads / 中: 读上限；省略则禁读
-# write = "low"        # EN: max write risk; omit to disallow writes / 中: 写上限；省略则禁写
+allow = ["capability=read,risk in (none,low)"]
+deny = ["!risk", "!capability", "dangerous=true"]
 
-# [[tokens]]
-# token = "another-secret"
-# name = "ops-agent"
-# applicant = "your-id"
-# read = "high"
-# write = "high"
+# EN: a second channel for operators. `identity = "fixed:<id>"` pins Subject.ID and
+#     beats every request header — any plugin that judges per person (quota counts
+#     per person; an approval plugin asks "the same person") needs a non-empty
+#     identity. Note a plugin's own HTTP route (e.g. an approval callback) is only
+#     token-AUTHENTICATED by the base; tool selectors do not apply to it, so it
+#     needs no entry in this allow list.
+# 中: 第二条是运维通道。`identity = "fixed:<id>"` 固定 Subject.ID 且优先于任何请求头——
+#     任何按人判定的插件（quota 按人计数、二次确认要求「同一个人」）都需要非空身份。
+#     注意插件自注册的 HTTP 路由（比如确认回调）只由基座做 token **认证**，
+#     工具 selector 对它不起作用，因此不需要在这个 allow 列表里为它开项。
+[[tokens]]
+token = "replace-with-another-random-secret"
+name = "ops-agent"
+applicant = "your-id"
+identity = "fixed:ops-robot"
+allow = [
+  "capability=read",
+  "capability=write,risk in (low,medium),pkg in (orders,users)",
+]
+deny = ["!risk", "!capability", "dangerous=true"]
 
-# EN: Per-level allowlist, combined with the token ceiling (both must pass).
-#     none/low are allowed for everyone and need not be listed. Values are
-#     X-MCP-User identities forwarded by the trusted gateway.
-# 中: 分级白名单，与 token 上限叠加（两者都通过才放行）。none/low 对所有人放行，无需列出。
-#     取值为可信网关透传的 X-MCP-User 身份。
-[risk_allowlist]
-high = ["alice"]
-medium = ["bob"]
+# ── External plugin sections ───────────────────────────────────────────────
+# EN: Quota and human approval are NOT in this repo — they are external plugins
+#     (see the "External plugins" section of the README). Each brings its own TOML
+#     section, documented by that plugin, and the base treats it exactly like the
+#     built-in ones below: a section nobody claims fails startup, and so does a
+#     section whose plugin you forgot to install (that looks exactly like a typo'd
+#     section name, and both mean "what you configured is not in effect").
+# 中: 配额、人工二次确认都**不在本仓库**，它们是外置插件（见 README 的「外置插件」
+#     一节）。每个外置插件自带一段 TOML，由该插件自己文档化；基座对它与下面的随仓插件
+#     完全一视同仁：无人认领的段落启动失败，写了某插件的段落却没装该插件同样启动失败
+#     （后者与段落名拼错在基座看来完全一样，两者都意味着「你配的东西没生效」）。
+
+# ── audit plugin (only when plugins/audit is installed) ────────────────────
+# EN: Install it FIRST so it sits OUTERMOST: it then records calls denied by inner
+#     plugins and sees the result after inner plugins (spill) rewrote it.
+#     Delivery is ASYNCHRONOUS and best-effort: the middleware only enqueues on the
+#     return path, a single background worker hands events to the Sinks you
+#     registered with audit.OnEvent. It NEVER blocks the call and NEVER changes the
+#     result. There is deliberately no "fail-closed" mode: audit judges on the
+#     RETURN path, where the tool has already run, so refusing to return cannot
+#     prevent any side effect — only the pre-execution gates (allowlist, approval,
+#     quota) can. The price, stated plainly: "every call leaves a record" degrades
+#     to best-effort — a full queue, kill -9 or a dead disk loses events. Drops are
+#     never silent: counted, alarmed (throttled), and exposed via audit.ReadStats().
+#     - At least one Sink MUST be registered before serving traffic; zero Sinks
+#       fails startup ("plugin present but nothing lands" is silent failure, and
+#       required_plugins only checks presence).
+#     - headers: request headers to record. Credential headers are rejected at
+#       startup (the base already strips them, so you would get a column of "-").
+#     - queue_size: event queue capacity. Omit / 0 => 4096. No unbounded option: a
+#       stuck Sink plus an unbounded queue is a path to OOM, while dropping is at
+#       least counted and visible.
+#     - flush_timeout: budget for draining the queue on shutdown, a duration STRING.
+#       Omit => "3s". It adds directly to shutdown time, so keep it short.
+#     - max_args_bytes / max_result_bytes: truncation caps in bytes before the
+#       payload enters the event. Omit / 0 => 1024 / 2048; truncation cannot be
+#       disabled. Args may contain invalid UTF-8 (raw caller bytes) — escape or
+#       replace it in your Sink if the backend rejects it.
+#     NOT covered by the audit stream: the base's token-authz denials (that layer
+#     sits BEFORE all plugins, so an unauthorized tools/call produces zero events),
+#     and tools/list records the UNFILTERED tool list (per-token filtering happens
+#     after this plugin). Collect the base's "[mcp] warning: 准入拒绝 …" /
+#     "tools/list 过滤 …" logs too when auditing who saw or tried what.
+# 中: 应**最先**安装，位于插件链**最外层**：这样既记得下被内层插件拒绝的调用，也看得到
+#     内层插件（spill）改写后的最终结果。
+#     投递是**异步、尽力而为**的：中间件在返回路径上只入队，后台单 worker 把事件交给你用
+#     audit.OnEvent 注册的落地函数；**永不阻塞调用、永不改变返回值**。刻意没有
+#     fail-closed 档：审计判定在**返回路径**上、工具此刻已经执行完，拒绝返回挡不住任何
+#     副作用——真正需要 fail-closed 的是执行**前**的门（人白名单、二次确认、配额）。
+#     代价直说：「每次调用必有记录」降级为尽力而为——队列打满、kill -9、掉盘都会丢事件；
+#     但丢弃绝不静默：计数 + 限流告警 + audit.ReadStats() 供宿主接监控。
+#     - 开始接流之前**至少注册一个 Sink**，否则启动失败（「插件在场却一条也不落」是静默
+#       失效，而 required_plugins 只校验插件在场）。
+#     - headers：采集哪些请求头。凭据类头一律启动失败（基座已剔除它们，配了只会拿到
+#       一列 "-"）。
+#     - queue_size：队列容量，省略/填 0 => 4096。没有「无界队列」的写法：落地方卡住 +
+#       无界队列就是一条通往 OOM 的路，而丢事件至少是有计数、看得见的。
+#     - flush_timeout：退出时排空队列的预算，**时长字符串**，省略 => "3s"。它直接加在
+#       服务停止耗时上，别配长。
+#     - max_args_bytes / max_result_bytes：入参/结果进事件前的截断上限（字节），
+#       省略/填 0 => 1024 / 2048；**无法关闭**截断。入参可能含非法 UTF-8（调用方原始
+#       字节），后端不接受时请在自己的 Sink 里转义或替换。
+#     审计流覆盖不到的两处：基座 token 准入的拒绝（那一层在所有插件**之前**，越权
+#     tools/call 在审计流里是 0 条事件）；以及 tools/list 记的是**过滤前**的全量清单
+#     （按 token 过滤发生在本插件之后）。做「谁看见/试过哪些工具」的权限审计时，
+#     必须把基座那两条 "[mcp] warning: 准入拒绝 …" / "tools/list 过滤 …" 日志一并采集。
+# [audit]
+# headers = ["X-Tenant", "User-Agent"]
+# queue_size = 4096
+# flush_timeout = "3s"
+# max_args_bytes = 1024
+# max_result_bytes = 2048
+
+# ── spill plugin (only when plugins/spill is installed) ────────────────────
+# EN: The spill plugin reads this section itself; keep it commented out unless
+#     you actually call spill.Install(r) — see the claim rule just above.
+#     Install it LAST so it sits innermost and sees the untouched result.
+#     - dir: where oversized results are written. Omit => <tmp>/mcp-toolify/spill.
+#       Created with 0700, files 0600: they hold raw tool output.
+#     - threshold_bytes: bytes AFTER SERIALIZATION (wire bytes), not payload bytes:
+#       JSON escaping inflates text and base64 inflates binary by 4/3, so judging
+#       by payload UNDERESTIMATES. A result whose total wire size exceeds it is
+#       written to disk and replaced by a summary + download URL. The count covers
+#       text, images, audio, embedded resources, resource links AND
+#       structuredContent — not just text; a value that cannot be serialized is
+#       treated as oversized. Error results (isError) spill too.
+#       Omit / 0 => 65536; there is deliberately no way to disable spilling.
+#     - max_file_mib / max_total_mib: hard disk caps, in MiB (not bytes — these are
+#       capacity decisions, and 67108864 has to be done in your head). Omit / 0 =>
+#       64 per file and 512 for the directory. Over the per-file cap the write fails
+#       (and on_error decides); over the total cap the oldest files are evicted
+#       first, and only if that cannot free enough room does the write fail.
+#     - ttl / gc_interval: retention and sweep period, as duration STRINGS
+#       ("30m", "2h"). Omit => "30m" / "5m". On shutdown the sweeper stops but
+#       files are kept (a download in flight should survive a restart); leftovers
+#       are reclaimed by the first sweep after the next boot.
+#     - preview_bytes: how much of the result stays inline as a preview.
+#       Omit / 0 => 2048. The preview is a FRAGMENT — do not Unmarshal it.
+#     - on_error: what to do when writing to disk fails. "deny" (default) is
+#       fail-closed: the oversized result is NOT handed back, and the error text
+#       warns that the tool may already have run — do not blindly retry. "warn"
+#       keeps the original result but always logs; there is no silent option.
+#     The download endpoint /spill/<id> is registered with Registry.Route, so the
+#     base wraps it in token auth: it serves raw tool output. On top of that the
+#     plugin checks OWNERSHIP — the token purpose name recorded at spill time,
+#     plus Subject.ID when the owner had an identity; anyone else gets a bare 404
+#     (not 403, and no owner hint: existence and topology stay hidden).
+#     The id embeds the replica that produced the file; a request landing on
+#     another replica is reverse-proxied to the owner when that address is in the
+#     peer whitelist, otherwise 404. The absolute URL in the summary comes from
+#     PublicBaseURL, which MUST be this replica's directly reachable address — a
+#     load-balancer entry point would send downloads to the wrong replica.
+#     The dir permission is tightened to 0700 at startup; if the dir is not owned
+#     by this process (or chmod does not stick) startup is refused. The directory
+#     is then held open as a handle (os.OpenRoot), so replacing the path with a
+#     symlink after startup cannot redirect reads or writes.
+#     KNOWN RISK: replica-to-replica forwarding uses plain http:// and passes the
+#     caller's Bearer token through as-is, so the token is visible to anyone who
+#     can sniff the internal network. When peers live on different hosts, put TLS
+#     between them or replace the pass-through with an internal peer credential.
+# 中: spill 插件自己读这一段；除非确实调用了 spill.Install(r)，否则请保持注释——
+#     理由见上面一节。它应**最后**安装，位于最内层，才能看到未经改写的原始结果。
+#     - dir：落盘目录，省略 => <系统临时目录>/mcp-toolify/spill。目录 0700、文件 0600：
+#       里面是工具返回的原文。
+#     - threshold_bytes：**序列化后（wire）字节**阈值，不是 payload 字节：JSON 转义会让文本
+#       膨胀、base64 会让二进制膨胀 4/3，按 payload 判定属于**低估**。结果的 wire 总
+#       字节超过它就落盘并改写为摘要 + 下载链接；总字节覆盖文本、图片、音频、嵌入资源、
+#       资源链接与 structuredContent，不只是文本；无法序列化的值按「超大」处理。
+#       错误态结果（isError）同样落盘。省略/填 0 => 65536；刻意不提供「关闭落盘」的写法。
+#     - max_file_mib / max_total_mib：磁盘硬上限，单位 **MiB**（不是字节——这两项是容量
+#       决策，写成 67108864 得心算）。省略/填 0 => 单文件 64、目录总量 512。
+#       超单文件上限直接写失败（由 on_error 决定后续）；超总量上限先按最旧优先淘汰，
+#       腾不出空间才失败。
+#     - ttl / gc_interval：保留时长与回收扫描周期，写成**时长字符串**（"30m"、"2h"）。
+#       省略 => "30m" / "5m"。进程退出只停回收协程、不删文件（正在下载的结果不该因一次
+#       重启消失），残留文件由下次启动的首轮扫描清掉。
+#     - preview_bytes：摘要里保留的预览字节数，省略/填 0 => 2048。
+#       预览是**片段**，不要 Unmarshal。
+#     - on_error：落盘失败时怎么办。"deny"（默认）fail-closed：不把超大结果交给模型，
+#       并在错误文案里提示该工具可能已经执行、请勿直接重试；"warn" 保留原结果但必然
+#       打告警日志——没有「静默」这一档。「必然打日志」≠「逐请求一条」：这些告警在
+#       请求路径上，存储故障期间按 QPS 打会刷满磁盘。每类告警（强制拒绝 / 普通后端错误 /
+#       窗口被钳制）首条立即打，之后每分钟最多一条汇总，汇总行带「被压制多少条 / 累计多少条」。
+#     下载端点 /spill/<id> 用 Registry.Route 注册，由基座套 token 鉴权：它提供的是
+#     工具结果原文。在此之上插件还做**属主校验**——落盘时记下的 token 用途名，以及属主
+#     有身份时的 Subject.ID；非属主一律裸 404（不是 403，也不回显属主地址，避免泄漏
+#     存在性与拓扑）。id 内嵌产出该文件的副本地址；请求打到别的副本时，若该地址在 peer
+#     白名单内则反向代理到属主副本，否则 404。摘要里的绝对 URL 取自 PublicBaseURL，
+#     它必须是**本副本可直连的地址**，配成负载均衡入口会让下载落到非属主副本。
+#     落盘目录的权限在启动时收紧为 0700；目录不属于本进程（或 chmod 不生效）则拒绝启动。
+#     校验通过后目录会被以句柄形式持有（os.OpenRoot），启动之后把该路径换成软链
+#     也无法把读写重定向到别处。
+#     **已知风险**：副本间转发走明文 http://，并且把调用方的 Bearer token 原样透传给
+#     属主副本 —— 内网抓包即可拿到该 token。副本跨机部署时请在 peer 之间加 TLS，
+#     或用副本间的内部凭据替代透传调用方 token。
+# [spill]
+# dir = "/var/tmp/mcp-toolify/spill"
+# threshold_bytes = 65536
+# ttl = "30m"
+# gc_interval = "5m"
+# preview_bytes = 2048
+# max_file_mib = 64
+# max_total_mib = 512
+# on_error = "deny"
+

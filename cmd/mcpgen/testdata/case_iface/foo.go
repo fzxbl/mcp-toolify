@@ -28,7 +28,7 @@ func (l Label) Sel() map[string]string { return map[string]string{"app": l.App} 
 // 返回：error 表示是否成功。
 //
 // mcp:tool
-// mcp:tags=write
+// mcp:labels=capability=write
 func ApplyPatch(group string, patch Patch) error {
 	_ = group
 	_ = patch

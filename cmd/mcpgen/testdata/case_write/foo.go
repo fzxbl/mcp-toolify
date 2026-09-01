@@ -9,7 +9,7 @@ import "github.com/fzxbl/mcp-toolify/cmd/mcpgen/testdata/case_write/authz"
 // param: spec — 新 spec
 //
 // mcp:tool
-// mcp:tags=write
+// mcp:labels=capability=write
 // mcp:bind=user:authz.User
 // mcp:import=github.com/fzxbl/mcp-toolify/cmd/mcpgen/testdata/case_write/authz
 func UpdateThing(group, app, spec string, user authz.CredGenerator) error {

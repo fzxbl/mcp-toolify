@@ -29,16 +29,11 @@ type toolData struct {
 	OutputType  string
 	OutputZero  string
 	OutputExpr  string
-	// SpillExpr 是交给 runtime.MaybeSpill 的原始返回值表达式（不套 {"result":...} 包装），
-	// 使 MaybeSpill 能按真实返回类型推导落盘格式（slice → jsonl，其余 → json）并测量
-	// 结果体积以决定是否落盘。非单值返回时回退为 OutputExpr。
-	SpillExpr        string
+
 	HasError         bool
 	CallExpr         string
 	DescriptionLit   string
-	TagsLit          string
-	CapabilityLit    string // runtime.ReadOnly | runtime.ReadWrite
-	RiskLit          string // runtime.RiskNone|RiskLow|RiskMedium|RiskHigh
+	LabelsLit        string // map[string]string{...} 或 nil
 	InputFields      []fieldData
 	NeedsInputSchema bool
 }
@@ -112,30 +107,7 @@ func buildToolData(c Candidate, srcPkgPath string, imps map[string]struct{}) (to
 		td.ToolName = c.PkgName + "." + snakeCase(c.Name)
 	}
 	td.DescriptionLit = strconv.Quote(normalizeDesc(c.Description, c.Detail))
-
-	tagItems := make([]string, 0, len(c.Tags))
-	for _, t := range c.Tags {
-		tagItems = append(tagItems, strconv.Quote(strings.TrimSpace(t)))
-	}
-	td.TagsLit = strings.Join(tagItems, ", ")
-
-	td.CapabilityLit = "runtime.ReadOnly"
-	for _, tag := range c.Tags {
-		if strings.TrimSpace(tag) == "write" {
-			td.CapabilityLit = "runtime.ReadWrite"
-			break
-		}
-	}
-	switch c.Risk {
-	case "low":
-		td.RiskLit = "runtime.RiskLow"
-	case "medium":
-		td.RiskLit = "runtime.RiskMedium"
-	case "high":
-		td.RiskLit = "runtime.RiskHigh"
-	default:
-		td.RiskLit = "runtime.RiskNone"
-	}
+	td.LabelsLit = labelsLit(c.Labels)
 
 	var callArgs []string
 	for _, p := range c.Params {
@@ -192,7 +164,6 @@ func buildToolData(c Candidate, srcPkgPath string, imps map[string]struct{}) (to
 			td.OutputType = "any"
 			td.OutputZero = "nil"
 			td.OutputExpr = `map[string]any{"result": out}`
-			td.SpillExpr = "out"
 			td.CallExpr = fmt.Sprintf("out := src.%s(%s)", callExpr(c), strings.Join(callArgs, ", "))
 		}
 	case 2:
@@ -200,7 +171,6 @@ func buildToolData(c Candidate, srcPkgPath string, imps map[string]struct{}) (to
 			td.OutputType = "any"
 			td.OutputZero = "nil"
 			td.OutputExpr = `map[string]any{"result": out}`
-			td.SpillExpr = "out"
 			td.HasError = true
 			td.CallExpr = fmt.Sprintf("out, callErr := src.%s(%s)", callExpr(c), strings.Join(callArgs, ", "))
 		} else {
@@ -211,12 +181,24 @@ func buildToolData(c Candidate, srcPkgPath string, imps map[string]struct{}) (to
 		// >2 返回值：按返回变量名打包成 map，末位若为 error 单独处理。
 		td.buildMultiReturn(c)
 	}
-	// 非单值返回场景（0 值 / 纯 error / 多值）没有单一原始返回值可 spill，
-	// 回退用 OutputExpr（打包后的 map）。
-	if td.SpillExpr == "" {
-		td.SpillExpr = td.OutputExpr
-	}
 	return td, nil
+}
+
+// labelsLit 把 labels 渲染成 Go map 字面量，key 按字典序保证生成结果稳定。
+func labelsLit(labels map[string]string) string {
+	if len(labels) == 0 {
+		return "nil"
+	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%q: %q", k, labels[k]))
+	}
+	return "map[string]string{" + strings.Join(parts, ", ") + "}"
 }
 
 // buildMultiReturn 把多个返回值（可能末位是 error）打包成 map[string]any。

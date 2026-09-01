@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"go/ast"
 	"go/types"
+	"sort"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
+
+	"github.com/fzxbl/mcp-toolify/selector"
 )
 
 // Param 描述一个函数参数。
@@ -38,8 +41,7 @@ type Candidate struct {
 	Returns     []Result
 	// 标记
 	ToolName string            // mcp:name=...
-	Tags     []string          // mcp:tags=a,b
-	Risk     string            // mcp:risk=low|medium|high，缺省空串
+	Labels   map[string]string // mcp:labels=k=v,k2=v2
 	Binds    map[string]string // mcp:bind=param:Type，param -> 具体类型表达式（可含包前缀，如 authz.User）
 	Imports  []string          // mcp:import=<path>，供 mcp:bind 引用的外部包类型所在 import path（可多条）
 }
@@ -73,7 +75,9 @@ func parseCandidates(pkgPath string) ([]Candidate, error) {
 				}
 				cand, err := buildCandidate(pkg, fn)
 				if err != nil {
-					return nil, fmt.Errorf("%s.%s: %w", pkg.PkgPath, fn.Name.Name, err)
+					// 带上 file:line，标注写错时能直接跳到出错的函数注释。
+					return nil, fmt.Errorf("%s.%s (%s): %w",
+						pkg.PkgPath, fn.Name.Name, pkg.Fset.Position(fn.Pos()), err)
 				}
 				out = append(out, cand)
 			}
@@ -114,9 +118,19 @@ func buildCandidate(pkg *packages.Package, fn *ast.FuncDecl) (Candidate, error) 
 	cand.Description = desc
 	cand.Detail = detail
 	cand.ToolName = markers["name"]
-	if v := markers["tags"]; v != "" {
-		cand.Tags = strings.Split(v, ",")
+	if err := checkMarkers(markers); err != nil {
+		return cand, err
 	}
+	// `// mcp:labels=`（写了标记但值为空）必须报错：静默当成「没有 labels」会让
+	// 工具在 deny-by-default 的准入里彻底不可见，而作者以为自己标过了。
+	if v, ok := markers["labels"]; ok && strings.TrimSpace(v) == "" {
+		return cand, fmt.Errorf("%s", "empty mcp:labels: 写了标记就必须给出至少一个 k=v")
+	}
+	labels, err := parseLabels(markers["labels"])
+	if err != nil {
+		return cand, err
+	}
+	cand.Labels = labels
 	cand.Binds = parseBinds(markers)
 	if v := markers["import"]; v != "" {
 		for _, ip := range strings.Split(v, ";") {
@@ -124,12 +138,6 @@ func buildCandidate(pkg *packages.Package, fn *ast.FuncDecl) (Candidate, error) 
 				cand.Imports = append(cand.Imports, ip)
 			}
 		}
-	}
-	cand.Risk = markers["risk"]
-	switch cand.Risk {
-	case "", "low", "medium", "high":
-	default:
-		return cand, fmt.Errorf("invalid mcp:risk=%q (want low|medium|high)", cand.Risk)
 	}
 
 	// 类型信息
@@ -211,10 +219,15 @@ func parseDoc(g *ast.CommentGroup) (desc, detail string, params map[string]strin
 				markers[rest] = ""
 			} else {
 				key, val := rest[:eq], rest[eq+1:]
-				// bind / import 可出现多次，聚合为 ';' 分隔，供后续拆解。
-				if (key == "bind" || key == "import") && markers[key] != "" {
+				// bind / import / labels 可出现多次：bind/import 用 ';' 聚合，
+				// labels 用 ',' 聚合（与单行多 label 写法同构）。多行写成同一个 key
+				// 时由 parseLabels 的 duplicate-key 检查拦下，不会静默覆盖。
+				switch {
+				case (key == "bind" || key == "import") && markers[key] != "":
 					markers[key] += ";" + val
-				} else {
+				case key == "labels" && markers[key] != "":
+					markers[key] += "," + val
+				default:
 					markers[key] = val
 				}
 			}
@@ -238,4 +251,67 @@ func parseDoc(g *ast.CommentGroup) (desc, detail string, params map[string]strin
 		detail = strings.TrimSpace(parts[1])
 	}
 	return
+}
+
+// knownMarkers 是允许出现在 godoc 里的全部 mcp: 标记。
+// 白名单而非黑名单：拼错（mcp:label=）、大小写不符（mcp:Labels=）或已废弃的标记
+// 若被静默忽略，工具会带着"标签凭空消失"的样子生成出来，无从察觉。
+var knownMarkers = map[string]bool{
+	"tool": true, "name": true, "labels": true, "bind": true, "import": true,
+}
+
+// removedMarkers 是已废弃标记到迁移提示的映射，单独给文案便于定位改法。
+var removedMarkers = map[string]string{
+	"tags": "mcp:tags is removed, use mcp:labels=capability=write",
+	"risk": "mcp:risk is removed, use mcp:labels=risk=high",
+}
+
+// checkMarkers 校验 godoc 里的 mcp: 标记名，未知或已废弃的一律报错。
+func checkMarkers(markers map[string]string) error {
+	keys := make([]string, 0, len(markers))
+	for k := range markers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // 多个未知标记时报错稳定，便于测试与复现
+	for _, k := range keys {
+		if msg, removed := removedMarkers[k]; removed {
+			return fmt.Errorf("%s", msg)
+		}
+		if !knownMarkers[k] {
+			return fmt.Errorf("unknown marker mcp:%s (known: bind, import, labels, name, tool)", k)
+		}
+	}
+	return nil
+}
+
+// parseLabels 解析 mcp:labels=k=v,k2=v2；重复 key、空项、非法 key/value 都报错。
+// key/value 的字符集规则由 selector 包唯一持有（ValidateLabelKey/ValidateLabelValue），
+// 生成期与匹配期共用，避免出现"能标注却永远匹配不上"的 label。
+func parseLabels(raw string) (map[string]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	out := map[string]string{}
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		i := strings.IndexByte(item, '=')
+		if i <= 0 {
+			return nil, fmt.Errorf("invalid label %q (want k=v)", item)
+		}
+		k, v := strings.TrimSpace(item[:i]), strings.TrimSpace(item[i+1:])
+		if v == "" {
+			return nil, fmt.Errorf("invalid label %q (want k=v)", item)
+		}
+		if err := selector.ValidateLabelKey(k); err != nil {
+			return nil, err
+		}
+		if err := selector.ValidateLabelValue(v); err != nil {
+			return nil, err
+		}
+		if _, dup := out[k]; dup {
+			return nil, fmt.Errorf("duplicate label key %q", k)
+		}
+		out[k] = v
+	}
+	return out, nil
 }

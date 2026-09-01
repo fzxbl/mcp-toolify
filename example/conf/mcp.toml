@@ -1,0 +1,65 @@
+# 可运行示例的配置：与 example/cmd/server 装的唯一内置插件（spill）一一对应。
+#
+# 审计（audit）、配额（quota）、二次确认（confirm）都已移出本仓库，作为外置插件的范例：
+# 装它们时按各自 module 的文档补上对应段落，并在 main.go 里按「外 → 内」的顺序调用它们
+# 的 Install（推荐顺序见 README 的「插件顺序」一节）。
+#
+# 为什么与仓库根目录的 config.example.toml 分成两份：
+#   - config.example.toml 是**带注释的完整 schema**（每个键的语义、默认值与取舍都写在
+#     那里），其中所有插件段落都保持注释状态，因为它同时被「不装任何插件的基座」加载；
+#   - 本文件是**一份真的会被加载的最小可用配置**，插件段落全部生效。
+#
+# 基座有配置键**认领制**：文件里任何没被基座或某个插件解码走的键都会让启动失败
+# （拼错的键静默失效比启动报错危险得多）。因此本文件的每一段都必须对应一个
+# 真的 Install 了的插件——删掉 main.go 里的某个 Install，本文件就必须同步删掉那一段。
+#
+# 切勿把真实 token 提交进仓库。
+
+# ── 基座：身份与 logid ─────────────────────────────────────────────────────
+# 示例里不信任客户端身份头（默认值），身份由下面 ops-agent 的 identity 固定。
+identity_headers = ["X-MCP-User"]
+
+# 必须在场的插件，缺一个就启动失败。
+required_plugins = ["spill"]
+
+[log]
+logid_header = "X-Log-Id"
+
+# ── 基座：token 鉴权（必填）────────────────────────────────────────────────
+# 只读通道：只能看见、也只能执行 capability=read 且 risk in (none,low) 的工具。
+# deny 里的 "!risk" / "!capability" 是必要兜底：k8s 语义下缺失该 key 也算匹配 !=/notin，
+# 新工具忘打标就会被放行。
+[[tokens]]
+token = "replace-me-readonly"
+name = "readonly-agent"
+applicant = "your-id"
+allow = ["capability=read,risk in (none,low)"]
+deny = ["!risk", "!capability"]
+
+# 运维通道：可以执行 greeter 包里的写工具。identity 固定为一个服务号身份——
+# 按人判定的外置插件（配额按人计数、二次确认要求「同一个人」）都要求非空 Subject.ID。
+[[tokens]]
+token = "replace-me-ops"
+name = "ops-agent"
+applicant = "your-id"
+identity = "fixed:ops-robot"
+allow = [
+  "capability=read",
+  "capability=write,risk in (low,medium,high),pkg in (greeter)",
+]
+deny = ["!risk", "!capability", "dangerous=true"]
+
+# ── spill 插件（最内层，看得到未经改写的原始结果）──────────────────────────
+# dir 在示例里写死成 /tmp 下的固定路径，方便你直接 ls 看落盘文件。**共享机器上要改掉**：
+# spill 会校验落盘目录归属本进程，同机上别的用户先建过同名目录时会直接拒绝启动
+# （这是刻意的——落盘的是工具返回原文）。省略 dir 则取 <系统临时目录>/mcp-toolify/spill，
+# 那条路径同样在 /tmp 下，共用机器请显式配一个自己有权的目录。
+[spill]
+dir = "/tmp/mcp-toolify-example/spill"
+threshold_bytes = 65536
+ttl = "30m"
+gc_interval = "5m"
+preview_bytes = 2048
+max_file_mib = 64
+max_total_mib = 512
+on_error = "deny"

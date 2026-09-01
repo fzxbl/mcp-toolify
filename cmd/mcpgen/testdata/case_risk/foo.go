@@ -5,8 +5,7 @@ package case_risk
 // param: target — 目标
 //
 // mcp:tool
-// mcp:tags=write
-// mcp:risk=high
+// mcp:labels=risk=high,capability=write,owner=core
 func DangerOp(target string) error {
 	_ = target
 	return nil
