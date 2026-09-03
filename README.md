@@ -250,6 +250,26 @@ original path and method**, so replicas that disagree about where things are
 mounted silently break cross-replica plugin callbacks and spill downloads (the
 forwarded request lands on a 404). Single-replica deployments can use any prefix.
 
+**Let the host choose the plugin route prefix — via `Config.RoutePrefix`, not by
+rewriting patterns at mount time.** A plugin only declares its own pattern
+(`/spill/`); which prefix it hangs under is the host's call, e.g. collecting every
+MCP path under one prefix so a single ACL rule covers all external entry points:
+
+```go
+cfg := toolify.Config{RoutePrefix: "/mcp/plugin", /* ... */}
+// Routes() now yields "/mcp/plugin/spill/" — mount it verbatim.
+```
+
+Three places must agree with the mount point, and two of them are **not** in the
+host's hands: the patterns from `Routes()`, the absolute URL a plugin hands to the
+agent (`runtime.PublicURL`), and the target path a plugin uses when forwarding to
+the owning replica (`runtime.RoutePath`). Adding the prefix yourself at mount time
+only fixes the first: the spill download URL would still point at `/spill/<id>` and
+cross-replica forwarding would still target the old path — both 404s that surface
+only in a multi-replica deployment. So the base applies the prefix in all three, and
+a malformed prefix (no leading slash, trailing slash, wildcard) fails startup rather
+than degrading into a 404 that points nowhere near its cause.
+
 `Handlers()` is idempotent — repeated calls return the same handler (and the same error), so plugin middleware never gets installed twice. Routes a plugin registers with `r.Route(...)` come back **already wrapped in token authentication**; a route that must be reachable without a token has to say so explicitly with `r.RoutePublic(...)`. When you mount by hand, remember to call `r.RunStop(ctx)` on shutdown so plugins can close files, connection pools and sweeper goroutines. `RunStop` is idempotent, and the base **also runs it for you when startup fails** (a failing config-key check, build hook, or `net.Listen`): by then every plugin's `Install` has already started sweeper goroutines and connection pools, and asking every caller to remember one cleanup per failure path is a contract that gets missed.
 Once cleanup has run the `Registry` is spent: `Handlers()` and `Start()` refuse from then on.
 Retrying (say, on a different port after `net.Listen` failed) must build a fresh `Registry` —

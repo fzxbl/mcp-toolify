@@ -290,7 +290,7 @@ func Install(r *runtime.Registry) error {
 		o.Quota.MaxFileBytes>>mibShift, o.Quota.MaxTotalBytes>>mibShift, o.Dir)
 	log.Printf("[mcp] spill: 下载鉴权粒度=token 用途名 + 属主有身份时再比对 Subject.ID；"+
 		"基座默认不信任身份头（Subject.ID 为空），此时同一 token 用途名的调用方之间"+
-		"可以互相下载 %s 结果", downloadPath)
+		"可以互相下载 %s 结果", runtime.RoutePath(downloadPath))
 	r.Route(downloadPath, st.downloadHandler())
 	r.Use(middleware(o, st))
 	return nil

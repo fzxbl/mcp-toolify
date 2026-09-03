@@ -596,10 +596,13 @@ func (s *store) pathFor(id string) (string, bool) {
 // 监听 ":8011" 得到的是 http://[::]:8011 —— 一个 agent 根本连不上的通配地址
 // （审查实测）。这种 URL 放进模型上下文比不给更糟，所以宁可不给 URL、只给本地路径，
 // 并打一条启动级告警提示部署方显式配置本副本可直连的地址。
+//
+// 路径走 runtime.PublicURL：宿主可用 Config.RoutePrefix 把本端点挂到任意前缀之下，
+// URL 必须与实际挂载点同源。
 func (s *store) url(id string) string {
 	base := runtime.PublicBaseURL()
 	if usableBase(base) {
-		return base + downloadPath + id
+		return runtime.PublicURL(downloadPath) + id
 	}
 	warnBaseOnce.Do(func() {
 		log.Printf("[mcp] spill warning: 对外地址 %q 不可用于下载（未配置 PublicBaseURL 或"+
@@ -995,7 +998,9 @@ func (s *store) forwardToOwner(w http.ResponseWriter, r *http.Request, id string
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
-			req.URL.Path = downloadPath + id
+			// 属主副本上的路径 = 宿主的挂载前缀（runtime.RoutePath）+ id，
+			// 与给 agent 的下载 URL 同源。
+			req.URL.Path = runtime.RoutePath(downloadPath) + id
 			req.Header.Set(forwardedHeader, "1")
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {

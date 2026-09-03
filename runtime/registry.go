@@ -64,8 +64,11 @@ type Registry struct {
 }
 
 // NewRegistry 构造一个空 Registry（不注册任何工具），供测试与自定义组装使用。
+//
+// cfg.RoutePrefix 在这里生效而不是等到 build：插件 Install 期就要用它登记 owner 路由、
+// 拼转发路径。非法前缀记成启动失败，由 validate 抛出。
 func NewRegistry(cfg Config) *Registry {
-	return &Registry{
+	r := &Registry{
 		cfg: cfg,
 		srv: mcp.NewServer(&mcp.Implementation{
 			Name:    "mcp-toolify",
@@ -75,6 +78,10 @@ func NewRegistry(cfg Config) *Registry {
 		publicRoutes: map[string]http.Handler{},
 		claimedKeys:  map[string]bool{},
 	}
+	if err := setRoutePrefix(cfg.RoutePrefix); err != nil {
+		r.err = err
+	}
+	return r
 }
 
 // New 构造 Registry 并按 cfg 的包白名单 / label selector 注册生成的工具，
@@ -183,7 +190,7 @@ func (r *Registry) Use(mw Middleware) { r.mws = append(r.mws, mw) }
 // Middlewares 返回已注册的插件中间件（基座内部与测试使用）。
 func (r *Registry) Middlewares() []Middleware { return r.mws }
 
-// Tool 注册一个插件自带的 MCP 工具（如 confirm）。
+// Tool 注册一个插件自带的 MCP 工具。
 func (r *Registry) Tool(add func(s *mcp.Server)) {
 	if add != nil {
 		r.toolCalls++
@@ -239,15 +246,16 @@ func (r *Registry) RoutePublic(pattern string, h http.Handler) {
 // Routes 返回插件路由，需鉴权的已套上认证层（基座挂载与测试使用）。
 // 必须在配置加载之后调用；未加载时 fail-closed 返回空 map。
 //
+// pattern 是对外的绝对路径（已按 Config.RoutePrefix 加好前缀），宿主原样 mount 即可。
+//
 // 每条路由都再套一层 WithPathOwnerRouting：插件路由上的 id 常常是有归属的
-// （spill 的 /spill/<id>、confirm 的 /confirm/<回执 id>），而资源与挂起的请求只存在于
-// 产出它的那个副本。少了这一层，多副本部署下「回调/下载被负载均衡打到别的副本」
-// 就是一次静默失败，而单副本部署完全看不出来。
+// （如 spill 的 /spill/<id>），而资源只存在于产出它的那个副本。少了这一层，
+// 多副本部署下「请求被负载均衡打到别的副本」就是一次静默失败。
 // 顺序与 MCP 端点一致（认证在外、owner 路由在内）：反代出去的请求会被属主再认证一次。
 func (r *Registry) Routes() map[string]http.Handler {
 	out := make(map[string]http.Handler, len(r.routes)+len(r.publicRoutes))
 	for pattern, h := range r.publicRoutes {
-		out[pattern] = WithPathOwnerRouting(h)
+		out[RoutePath(pattern)] = WithPathOwnerRouting(h)
 	}
 	if len(r.routes) == 0 {
 		return out
@@ -259,14 +267,14 @@ func (r *Registry) Routes() map[string]http.Handler {
 		return out
 	}
 	for pattern, h := range r.routes {
-		out[pattern] = r.az.HTTPMiddleware(WithPathOwnerRouting(h))
+		out[RoutePath(pattern)] = r.az.HTTPMiddleware(WithPathOwnerRouting(h))
 	}
 	return out
 }
 
 // PluginNames 返回已安装插件的名字（**外→内**，即安装顺序）。
 // 与 `plugin chain (outer→inner)` 启动日志同源，供宿主自检链序——
-// 「confirm 装在 quota 之内还是之外」这类顺序约束只有断言得到名单才守得住。
+// 「A 装在 B 之内还是之外」这类顺序约束只有断言得到名单才守得住。
 func (r *Registry) PluginNames() []string {
 	return append([]string{}, r.names...)
 }
@@ -276,9 +284,9 @@ func (r *Registry) PluginNames() []string {
 //
 // 存在的理由（都是插件在 Install 里做不到的）：
 //
-//  1. **消除「Install 期校验」的假阳性**：使用方注入的回调（audit 的 sink、confirm 的
-//     notifier）允许在 Install 之后、开始接流之前才注册，Install 里检查「有没有注册」
-//     会把这种合法用法误判成启动失败。
+//  1. **消除「Install 期校验」的假阳性**：使用方注入的回调（如 audit 的 sink）允许在
+//     Install 之后、开始接流之前才注册，Install 里检查「有没有注册」会把这种合法用法
+//     误判成启动失败。
 //  2. **把「注册时机晚于接流」的空窗堵在接流前**，而不是只靠运行期兜底：
 //     插件的运行期兜底（deny）仍必须保留，两层不是二选一——OnBuild 只覆盖
 //     「启动之前就能看出来」的那一半，运行期把回调置回 nil 这类情况只有兜底管得住。
@@ -319,7 +327,7 @@ func (r *Registry) shape() registryShape {
 //
 // 两条纪律：
 //
-//  1. **panic 转 error**（与 plugins/confirm 的 callNotifier 同形）：钩子里跑的是插件与
+//  1. **panic 转 error**：钩子里跑的是插件与
 //     宿主的任意代码，而 build 用 sync.Once 缓存结果——f panic 时 Once 也会置 done，
 //     于是 builtHTTP / buildErr 双双留在零值，第二次 Handlers() 返回 (nil, nil)：
 //     宿主 recover 之后挂上一个 nil handler，每个请求都 nil 解引用。启动必须 fail-closed，
@@ -395,8 +403,8 @@ func callStopHook(i int, fn func()) {
 //
 // 组合出这条路径的是两件本身都正确的事：启动失败时基座会兜一次 RunStop，而 RunStop
 // 幂等。于是「listen 失败 → 换个端口用同一个 Registry 重试 Start」会真的把服务起起来，
-// 但插件已经被清理过：只读工具照常返回结果，受配额管辖的高危工具**永久**被拒
-// （计数后端已关闭），spill 的落盘文件与 confirm 的待确认单再也不被回收。
+// 但插件已经被清理过：只读工具照常返回结果，依赖外部后端的插件**永久**拒绝放行
+// （连接已关），spill 的落盘文件也再也不被回收。
 // 这种「带着已清理的插件继续对外服务」的降级形态必须直接拒绝——重试请新建一个
 // Registry（New 出来的实例自带全新的 stopOnce/stopped，重建这条路是通的）。
 func (r *Registry) checkStopped() error {
@@ -520,9 +528,8 @@ func (r *Registry) build() (http.Handler, error) {
 		r.builtHTTP, r.buildErr = r.buildOnceBody()
 		if r.buildErr != nil {
 			// 启动失败就地回收：插件在 Install 里已经起了协程、开了连接池与文件句柄
-			// （confirm 的 startGC、spill 的 gcLoop、quota 的 Redis/MySQL 客户端及其
-			// 内部清理协程），而失败原因常常在最后一个插件之后才发现（配置认领检查、
-			// build 期钩子）。指望每个调用方在每条失败路径上记得清一次，是必漏的约定；
+			// （如 spill 的 gcLoop、需要数据库的插件的客户端及其内部清理协程），
+			// 而失败原因常常在最后一个插件之后才发现（配置认领检查、build 期钩子）。指望每个调用方在每条失败路径上记得清一次，是必漏的约定；
 			// RunStop 本身幂等，宿主照旧 defer 一次即可。
 			r.RunStop(context.Background())
 		}

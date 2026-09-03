@@ -47,7 +47,7 @@ func (f Format) mime() string {
 // 为什么允许一个包级变量（本仓库的纪律是「测试注入点用未导出字段、禁止包级可变
 // var」）：Put/Create 这组 API 是**给使用方的**，宿主的业务代码（异步探测任务、
 // 大结果导出）拿不到、也不该拿到插件在 Install 里构造的那个 store 指针 —— 与
-// audit.OnEvent / confirm.OnRequest 属于同一类「宿主侧入口」例外。原子指针而不是
+// audit.OnEvent 属于同一类「宿主侧入口」例外。原子指针而不是
 // 裸变量：宿主的后台协程可能在进程退出、OnStop 已经关掉目录句柄之后还在写。
 var current atomic.Pointer[store]
 

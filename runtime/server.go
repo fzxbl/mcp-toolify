@@ -34,6 +34,12 @@ type Config struct {
 	// Peers 是静态兄弟副本白名单（host:port），供 owner 路由校验反代目标。
 	// 多副本部署通常改用 SetPeerProvider 对接服务发现。
 	Peers []string
+	// RoutePrefix 是插件 HTTP 路由的对外前缀（如 "/mcp/plugin"）；空表示挂在根上。
+	// 必须以 "/" 开头、不以 "/" 结尾、不含通配符与空白，非法即启动失败。
+	//
+	// 基座把它施加到三处：Routes() 交出的 pattern、插件给 agent 的绝对 URL、插件转发到
+	// 属主副本的目标路径。详见 runtime/routeprefix.go。
+	RoutePrefix string
 }
 
 // Registrar 是生成代码暴露的注册函数类型（通常是生成的 tools.RegisterAll）。

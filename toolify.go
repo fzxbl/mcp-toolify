@@ -68,9 +68,24 @@ func RegisterOwnerRouted(toolName, paramName string) {
 
 // RegisterOwnerRoutedPath 声明「某 HTTP 路由前缀下的请求按路径里的 owned id 路由」，
 // 供有状态插件的 HTTP 回调（带外确认、下载）接入分布式层。
+//
+// prefix 是**请求的实际路径前缀**。宿主用 Config.RoutePrefix 给插件路由加了前缀时，
+// 插件应改用 RegisterOwnerRoutedRoute（传自己的 pattern，由基座补前缀）。
 func RegisterOwnerRoutedPath(prefix string, fn runtime.PathOwnerExtractor) {
 	runtime.RegisterOwnerRoutedPath(prefix, fn)
 }
+
+// RegisterOwnerRoutedRoute 同上，但前缀用插件自己的 pattern 表达，由基座补上
+// Config.RoutePrefix —— 插件不必知道宿主把它挂在哪。
+func RegisterOwnerRoutedRoute(pattern string, fn runtime.PathOwnerExtractor) {
+	runtime.RegisterOwnerRoutedRoute(pattern, fn)
+}
+
+// RoutePath 把插件自己的 pattern 换算成对外绝对路径（含 Config.RoutePrefix）。
+func RoutePath(pattern string) string { return runtime.RoutePath(pattern) }
+
+// PublicURL 返回某 pattern 的对外绝对地址；没有对外地址时为空串。
+func PublicURL(pattern string) string { return runtime.PublicURL(pattern) }
 
 // WithOwnerRouting 包裹 MCP handler：把归属兄弟副本的 tools/call 反代到属主副本。
 // 基座已在内部装好，仅在自定义组装时需要。

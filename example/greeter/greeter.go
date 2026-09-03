@@ -39,9 +39,9 @@ func AddNumbers(a int, b int) (sum int) {
 
 // Shout 把一句话改成全大写（示例里的「高危写操作」）。
 //
-// 它本身当然是无害的，标成 capability=write,risk=high 只是为了让示例真的走一遍
-// 配额与二次确认：example/conf/mcp.toml 里的 [[quota.rules]] 与 [confirm] 都按
-// 这两个 label 管辖，把它换成你自己那个真会改线上状态的函数即可。
+// 它本身当然是无害的，标成 capability=write,risk=high 只是为了让示例真的走一遍准入判定：
+// example/conf/mcp.toml 里只读通道看不见它、运维通道才能执行。按 label 管辖的插件
+// （配额、审批一类）也用同一组 label，把它换成你自己那个真会改线上状态的函数即可。
 //
 // param: text — 要改写的文本
 //

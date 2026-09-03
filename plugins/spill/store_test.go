@@ -325,3 +325,45 @@ func TestCloseIsIdempotent(t *testing.T) {
 	st.close()
 	st.close()
 }
+
+// TestRoutePrefixAppliesToURLAndForward：宿主用 Config.RoutePrefix 把本端点挂到别的前缀
+// 之下时，**给 agent 的下载 URL** 与**副本间转发的目标路径**必须一起跟着走。
+//
+// 这两处是同一个前缀的两个下游，最容易只改一头：只改 URL 的话单副本能下、多副本下
+// (N-1)/N 的请求转发到属主的旧路径拿 404；只改转发的话模型手里的链接直接 404。
+// 两条断言缺一个，都能让这类 bug 溜过去。
+func TestRoutePrefixAppliesToURLAndForward(t *testing.T) {
+	const prefix = "/mcp/plugin"
+	// 前缀是进程级状态，只能经 Config 生效（正是宿主的用法）；用完复位。
+	runtime.NewRegistry(runtime.Config{RoutePrefix: prefix})
+	t.Cleanup(func() { runtime.NewRegistry(runtime.Config{}) })
+
+	var gotPath string
+	owner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		io.WriteString(w, "PAYLOAD-FROM-OWNER")
+	}))
+	defer owner.Close()
+	ownerHost := strings.TrimPrefix(owner.URL, "http://")
+
+	withBaseURL(t, "http://127.0.0.1:18011")
+	runtime.SetPeers([]string{ownerHost})
+	t.Cleanup(func() { runtime.SetPeers(nil) })
+
+	st := newTestStore(t, time.Hour, time.Hour)
+	if got, want := st.url("abc"), "http://127.0.0.1:18011"+prefix+downloadPath+"abc"; got != want {
+		t.Errorf("下载 URL = %q, want %q", got, want)
+	}
+
+	runtime.SetPublicBaseURL("http://" + ownerHost)
+	peerID := runtime.NewOwnedID()
+	runtime.SetPublicBaseURL("http://127.0.0.1:18011")
+	rec := httptest.NewRecorder()
+	st.downloadHandler().ServeHTTP(rec, ownedRequest(peerID, testOwner))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("归属兄弟副本的 id => %d，want 200（应被反代到属主）", rec.Code)
+	}
+	if want := prefix + downloadPath + peerID; gotPath != want {
+		t.Errorf("转发路径 = %q，want %q", gotPath, want)
+	}
+}

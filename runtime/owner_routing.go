@@ -86,8 +86,8 @@ func OwnerRoutedPathRegistered(prefix string) bool {
 	return ok
 }
 
-// ownerFromPath 按注册的前缀找提取器并取 owner。最长前缀优先：允许 /confirm/ 与
-// /confirm/admin/ 各注册一个而不互相吞掉。
+// ownerFromPath 按注册的前缀找提取器并取 owner。最长前缀优先：允许 /a/ 与 /a/b/
+// 各注册一个而不互相吞掉。
 func ownerFromPath(r *http.Request) (string, bool) {
 	ownerRoutedPathMu.RLock()
 	best, bestFn := "", PathOwnerExtractor(nil)
