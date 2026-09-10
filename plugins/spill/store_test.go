@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -198,12 +199,14 @@ func TestDownloadHandlerTreatsExpiredAsGone(t *testing.T) {
 // TestDownloadForwardsToOwnerReplica 覆盖 I2：spill 文件只在产出它的副本本地，
 // 而下载请求经 LB 会随机落到任意副本。id 指向已知兄弟副本时必须把这次 GET 反代过去
 // （带上 Authorization 让属主再认证一次），不能回「文件不存在」。
+//
+// 转发由基座的路径 owner 路由完成（见 downloadEntry），本用例验的是「插件把提取器
+// 登记对了、于是这条链路真的通」；防环、白名单、单跳等判定归基座的用例。
 func TestDownloadForwardsToOwnerReplica(t *testing.T) {
-	var gotAuth, gotPath, gotForwarded string
+	var gotAuth, gotPath string
 	owner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotPath = r.URL.Path
-		gotForwarded = r.Header.Get(forwardedHeader)
 		io.WriteString(w, "PAYLOAD-FROM-OWNER")
 	}))
 	defer owner.Close()
@@ -215,14 +218,14 @@ func TestDownloadForwardsToOwnerReplica(t *testing.T) {
 
 	st := newTestStore(t, time.Hour, time.Hour)
 	// 造一个「归属兄弟副本」的 id：换个 base URL 生成，再换回来。
-	runtime.SetPublicBaseURL("http://" + ownerHost)
+	runtime.SetSelfAddr(ownerHost)
 	peerID := runtime.NewOwnedID()
-	runtime.SetPublicBaseURL("http://127.0.0.1:18011")
+	runtime.SetSelfAddr("127.0.0.1:18011")
 
 	rec := httptest.NewRecorder()
 	req := ownedRequest(peerID, testOwner)
 	req.Header.Set("Authorization", "Bearer t-ops")
-	st.downloadHandler().ServeHTTP(rec, req)
+	downloadEntry(t, st).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("归属兄弟副本的 id => %d，want 200（应被反代到属主）", rec.Code)
@@ -237,40 +240,38 @@ func TestDownloadForwardsToOwnerReplica(t *testing.T) {
 	if gotPath != downloadPath+peerID {
 		t.Errorf("转发路径 = %q，want %q", gotPath, downloadPath+peerID)
 	}
-	if gotForwarded == "" {
-		t.Error("转发请求必须带防环标记")
-	}
 }
 
-// TestDownloadDoesNotForwardTwice：带防环标记的请求即使命中不了本地也不再转发，
-// 否则两个副本会互相甩包。
-func TestDownloadDoesNotForwardTwice(t *testing.T) {
-	var hits int
+// TestDownloadServesLocalCopyWithoutForwarding：id 归属兄弟副本、但这份文件本地就有
+// （同机多副本共享落盘目录时的常态）时，提取器要返回空串让请求留在本地——
+// 绕一趟属主既慢又可能白拿一个 404。
+func TestDownloadServesLocalCopyWithoutForwarding(t *testing.T) {
+	var hits int32
 	owner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
+		atomic.AddInt32(&hits, 1)
 		io.WriteString(w, "SHOULD-NOT-BE-CALLED")
 	}))
 	defer owner.Close()
 	ownerHost := strings.TrimPrefix(owner.URL, "http://")
 
-	withBaseURL(t, "http://127.0.0.1:18011")
+	withBaseURL(t, "http://"+ownerHost) // 先认属主，让落盘 id 内嵌它的地址
+	st := newTestStore(t, time.Hour, time.Hour)
+	id, _, err := st.put("demo.read", bigResult("hello-local"), testOwner)
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	// 再把本副本换成别的地址：id 归属「兄弟副本」，但文件就在本地。
+	runtime.SetSelfAddr("127.0.0.1:18011")
 	runtime.SetPeers([]string{ownerHost})
 	t.Cleanup(func() { runtime.SetPeers(nil) })
 
-	st := newTestStore(t, time.Hour, time.Hour)
-	runtime.SetPublicBaseURL("http://" + ownerHost)
-	peerID := runtime.NewOwnedID()
-	runtime.SetPublicBaseURL("http://127.0.0.1:18011")
-
 	rec := httptest.NewRecorder()
-	req := ownedRequest(peerID, testOwner)
-	req.Header.Set(forwardedHeader, "1")
-	st.downloadHandler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("已转发过的请求 => %d，want 404", rec.Code)
+	downloadEntry(t, st).ServeHTTP(rec, ownedRequest(id, testOwner))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("本地有这份文件 => %d，want 200", rec.Code)
 	}
-	if hits != 0 {
-		t.Errorf("已转发过的请求又被转发了 %d 次", hits)
+	if n := atomic.LoadInt32(&hits); n != 0 {
+		t.Errorf("本地有文件却还是转发了 %d 次", n)
 	}
 }
 
@@ -280,12 +281,12 @@ func TestDownload404LeaksNoTopology(t *testing.T) {
 	withBaseURL(t, "http://127.0.0.1:18011")
 	st := newTestStore(t, time.Hour, time.Hour)
 	// 归属一个**未登记为 peer** 的地址：不转发，走本地 404。
-	runtime.SetPublicBaseURL("http://10.1.2.3:9999")
+	runtime.SetSelfAddr("10.1.2.3:9999")
 	peerID := runtime.NewOwnedID()
-	runtime.SetPublicBaseURL("http://127.0.0.1:18011")
+	runtime.SetSelfAddr("127.0.0.1:18011")
 
 	rec := httptest.NewRecorder()
-	st.downloadHandler().ServeHTTP(rec, ownedRequest(peerID, testOwner))
+	downloadEntry(t, st).ServeHTTP(rec, ownedRequest(peerID, testOwner))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("未知归属的 id => %d，want 404", rec.Code)
 	}
@@ -294,17 +295,17 @@ func TestDownload404LeaksNoTopology(t *testing.T) {
 		t.Errorf("404 响应泄漏了内网地址: %q", body)
 	}
 
-	// 第二种路径：属主**在 peer 白名单里但连不上**，走反向代理的 ErrorHandler。
+	// 第二种路径：属主**在 peer 白名单里但连不上**，走基座反向代理的 ErrorHandler。
 	// 只测上面那条（不转发）验不到 ErrorHandler，那正是 M1 里回显属主地址的地方。
 	dead := "127.0.0.1:1" // 保留端口，必然拒连
 	runtime.SetPeers([]string{dead})
 	t.Cleanup(func() { runtime.SetPeers(nil) })
-	runtime.SetPublicBaseURL("http://" + dead)
+	runtime.SetSelfAddr(dead)
 	deadID := runtime.NewOwnedID()
-	runtime.SetPublicBaseURL("http://127.0.0.1:18011")
+	runtime.SetSelfAddr("127.0.0.1:18011")
 
 	rec = httptest.NewRecorder()
-	st.downloadHandler().ServeHTTP(rec, ownedRequest(deadID, testOwner))
+	downloadEntry(t, st).ServeHTTP(rec, ownedRequest(deadID, testOwner))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("属主副本连不上 => %d，want 404", rec.Code)
 	}
@@ -326,7 +327,7 @@ func TestCloseIsIdempotent(t *testing.T) {
 	st.close()
 }
 
-// TestRoutePrefixAppliesToURLAndForward：宿主用 Config.RoutePrefix 把本端点挂到别的前缀
+// TestRoutePrefixAppliesToURLAndForward：宿主用 Registry.Mount 把本端点挂到别的前缀
 // 之下时，**给 agent 的下载 URL** 与**副本间转发的目标路径**必须一起跟着走。
 //
 // 这两处是同一个前缀的两个下游，最容易只改一头：只改 URL 的话单副本能下、多副本下
@@ -334,9 +335,12 @@ func TestCloseIsIdempotent(t *testing.T) {
 // 两条断言缺一个，都能让这类 bug 溜过去。
 func TestRoutePrefixAppliesToURLAndForward(t *testing.T) {
 	const prefix = "/mcp/plugin"
-	// 前缀是进程级状态，只能经 Config 生效（正是宿主的用法）；用完复位。
-	runtime.NewRegistry(runtime.Config{RoutePrefix: prefix})
-	t.Cleanup(func() { runtime.NewRegistry(runtime.Config{}) })
+	// 前缀是进程级状态；生产里唯一入口是 Registry.Mount（它还要一份完整 token 配置），
+	// 用例用 ForTest 版直接设置，用完复位。
+	if err := runtime.SetRoutePrefixForTest(prefix); err != nil {
+		t.Fatalf("SetRoutePrefixForTest: %v", err)
+	}
+	t.Cleanup(func() { runtime.SetRoutePrefixForTest("") })
 
 	var gotPath string
 	owner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -355,11 +359,14 @@ func TestRoutePrefixAppliesToURLAndForward(t *testing.T) {
 		t.Errorf("下载 URL = %q, want %q", got, want)
 	}
 
-	runtime.SetPublicBaseURL("http://" + ownerHost)
+	runtime.SetSelfAddr(ownerHost)
 	peerID := runtime.NewOwnedID()
-	runtime.SetPublicBaseURL("http://127.0.0.1:18011")
+	runtime.SetSelfAddr("127.0.0.1:18011")
 	rec := httptest.NewRecorder()
-	st.downloadHandler().ServeHTTP(rec, ownedRequest(peerID, testOwner))
+	// 请求走**加过前缀的实际路径**（线上宿主就是照 Routes() 交出的路径挂的）：
+	// owner 路由按实际路径匹配，转发也保留原路径。
+	downloadEntry(t, st).ServeHTTP(rec,
+		ownedRequestAt(prefix+downloadPath+peerID, testOwner))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("归属兄弟副本的 id => %d，want 200（应被反代到属主）", rec.Code)
 	}

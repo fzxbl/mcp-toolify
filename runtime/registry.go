@@ -65,8 +65,9 @@ type Registry struct {
 
 // NewRegistry 构造一个空 Registry（不注册任何工具），供测试与自定义组装使用。
 //
-// cfg.RoutePrefix 在这里生效而不是等到 build：插件 Install 期就要用它登记 owner 路由、
-// 拼转发路径。非法前缀记成启动失败，由 validate 抛出。
+// 挂载前缀不在这里给：它由宿主在 Registry.Mount 里连同挂载动作一起交出，
+// 于是「基座以为自己在哪」与「实际挂在哪」不可能对不上。未经 Mount 时前缀为空
+// （挂在根上），Start 与直接用 Handlers 的自定义组装都是这个形态。
 func NewRegistry(cfg Config) *Registry {
 	r := &Registry{
 		cfg: cfg,
@@ -77,9 +78,6 @@ func NewRegistry(cfg Config) *Registry {
 		routes:       map[string]http.Handler{},
 		publicRoutes: map[string]http.Handler{},
 		claimedKeys:  map[string]bool{},
-	}
-	if err := setRoutePrefix(cfg.RoutePrefix); err != nil {
-		r.err = err
 	}
 	return r
 }
@@ -246,7 +244,7 @@ func (r *Registry) RoutePublic(pattern string, h http.Handler) {
 // Routes 返回插件路由，需鉴权的已套上认证层（基座挂载与测试使用）。
 // 必须在配置加载之后调用；未加载时 fail-closed 返回空 map。
 //
-// pattern 是对外的绝对路径（已按 Config.RoutePrefix 加好前缀），宿主原样 mount 即可。
+// pattern 是对外的绝对路径（已按宿主 Mount 给出的挂载前缀加好前缀），宿主原样 mount 即可。
 //
 // 每条路由都再套一层 WithPathOwnerRouting：插件路由上的 id 常常是有归属的
 // （如 spill 的 /spill/<id>），而资源只存在于产出它的那个副本。少了这一层，
@@ -547,6 +545,9 @@ func (r *Registry) buildOnceBody() (http.Handler, error) {
 	if err := r.validate(); err != nil {
 		return nil, err
 	}
+	if r.cfg.SelfAddr != "" {
+		SetSelfAddr(r.cfg.SelfAddr)
+	}
 	if r.cfg.PublicBaseURL != "" {
 		SetPublicBaseURL(r.cfg.PublicBaseURL)
 	}
@@ -571,7 +572,7 @@ func (r *Registry) buildOnceBody() (http.Handler, error) {
 		&mcp.StreamableHTTPOptions{Stateless: true},
 	)
 	// owner 路由在认证之内：转发前请求已通过认证，属主副本会再认证一次。
-	return HTTPLogID(HTTPHeaders(r.az.HTTPMiddleware(WithOwnerRouting(h)))), nil
+	return HTTPLogID(HTTPHeaders(r.az.HTTPMiddleware(withMCPOwnerRouting(h)))), nil
 }
 
 // Handlers 返回可挂载到既有 HTTP server 的 MCP handler 与插件注册的路由。

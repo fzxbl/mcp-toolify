@@ -40,13 +40,21 @@ type Selector struct {
 	// Raw 是解析前的原始表达式，供基座做错误回显与启动日志打印生效规则，勿删。
 	Raw          string
 	Requirements []Requirement
+	// all 标记「空 selector」，按 k8s 语义匹配一切。它只由 Parse 对空串置位，
+	// 因此零值与解析失败仍是不匹配，跳过坏规则时是 fail-closed。
+	all bool
 }
 
-// Parse 解析 selector 字符串；空串或语法错误返回 error。
+// MatchesEverything 返回该 selector 是否为空 selector（匹配一切），供调用方在启动日志里
+// 声明「当前管辖全部对象」——那与「管辖某一小撮」的运维含义相差很大。
+func (s Selector) MatchesEverything() bool { return s.all }
+
+// Parse 解析 selector 字符串；语法错误返回 error。
+// 空串按 k8s 语义解析为「匹配一切」，不是错误。
 // 出错时返回零值 Selector（不匹配任何 labels），确保调用方跳过坏规则时是 fail-closed。
 func Parse(expr string) (Selector, error) {
 	if strings.TrimSpace(expr) == "" {
-		return Selector{}, fmt.Errorf("empty selector")
+		return Selector{Raw: expr, all: true}, nil
 	}
 	parts, err := splitTop(expr)
 	if err != nil {

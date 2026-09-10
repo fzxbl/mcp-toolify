@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,9 +12,49 @@ import (
 	"testing"
 )
 
+// unreadableBody 的 Read 一定失败：用它区分「基座读了 body」与「基座根本没读」——
+// 读了会被 withMCPOwnerRouting 判成 400，没读则原样交给下游 handler。
+type unreadableBody struct{}
+
+func (unreadableBody) Read([]byte) (int, error) { return 0, errors.New("body 不该被读") }
+
+// TestMCPOwnerRoutingReadsBodyOnlyWhenSomeToolRouted：一个工具都没登记按参数路由时，
+// MCP 包裹不该为了找工具名去读 body。
+//
+// 为什么值得一条用例：读 body 是**每个** POST 都要付的一次全量拷贝（工具入参可以很大），
+// 而「这个部署压根没用工具形态的 owner 路由」是很常见的情形。第二段反过来验证：
+// 一旦有工具登记，同一个请求就必须走到读 body 那步——否则这条短路等于把功能关掉了。
+func TestMCPOwnerRoutingReadsBodyOnlyWhenSomeToolRouted(t *testing.T) {
+	ResetOwnerRoutedForTest()
+	t.Cleanup(ResetOwnerRoutedForTest)
+	ResetOwnerRoutedPathsForTest()
+	t.Cleanup(ResetOwnerRoutedPathsForTest)
+	resetRoutePrefix(t)
+
+	var localHit int32
+	h := withMCPOwnerRouting(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&localHit, 1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/mcp", unreadableBody{}))
+	if atomic.LoadInt32(&localHit) != 1 || rec.Code != http.StatusNoContent {
+		t.Fatalf("没有工具登记时 body 仍被读了：hit=%d code=%d",
+			atomic.LoadInt32(&localHit), rec.Code)
+	}
+
+	RegisterOwnerRouted("demo_tool", "id")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/mcp", unreadableBody{}))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("有工具登记时应当读 body（读失败 => 400），实际 %d", rec.Code)
+	}
+}
+
 func TestOwnerOfOwnedAndPlain(t *testing.T) {
-	SetPublicBaseURL("http://10.0.0.1:8011")
-	defer SetPublicBaseURL("")
+	SetSelfAddr("10.0.0.1:8011")
+	defer SetSelfAddr("")
 	owned := NewOwnedID() // owner = 10.0.0.1:8011
 	if hp, ok := OwnerOf(owned); !ok || hp != "10.0.0.1:8011" {
 		t.Fatalf("OwnerOf(owned)=%q,%v want 10.0.0.1:8011,true", hp, ok)
@@ -33,7 +74,7 @@ func TestRegisterOwnerRouted(t *testing.T) {
 	}
 }
 
-func TestWithOwnerRoutingProxiesRemote(t *testing.T) {
+func TestMCPOwnerRoutingProxiesRemote(t *testing.T) {
 	owner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get(ownerForwardedHeader) == "" {
 			t.Error("proxied request must carry loop-guard header")
@@ -43,14 +84,14 @@ func TestWithOwnerRoutingProxiesRemote(t *testing.T) {
 	defer owner.Close()
 	host := hostOf(t, owner.URL)
 
-	SetPublicBaseURL("http://10.9.9.9:1") // self != owner
-	defer SetPublicBaseURL("")
+	SetSelfAddr("10.9.9.9:1") // self != owner
+	defer SetSelfAddr("")
 	SetPeers([]string{host})
 	defer SetPeers(nil)
 	RegisterOwnerRouted("demo_tool", "id")
 
 	local := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"local":true}`) })
-	srv := httptest.NewServer(WithOwnerRouting(local))
+	srv := httptest.NewServer(withMCPOwnerRouting(local))
 	defer srv.Close()
 
 	id := newIDForOwner(host)
@@ -66,12 +107,12 @@ func TestWithOwnerRoutingProxiesRemote(t *testing.T) {
 	}
 }
 
-func TestWithOwnerRoutingLocalCases(t *testing.T) {
-	SetPublicBaseURL("http://10.9.9.9:1")
-	defer SetPublicBaseURL("")
+func TestMCPOwnerRoutingLocalCases(t *testing.T) {
+	SetSelfAddr("10.9.9.9:1")
+	defer SetSelfAddr("")
 	RegisterOwnerRouted("demo_tool", "id")
 	local := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `local`) })
-	srv := httptest.NewServer(WithOwnerRouting(local))
+	srv := httptest.NewServer(withMCPOwnerRouting(local))
 	defer srv.Close()
 
 	cases := []struct{ body, hdr string }{
@@ -96,13 +137,13 @@ func TestWithOwnerRoutingLocalCases(t *testing.T) {
 	}
 }
 
-// TestRoutesWrapPluginRoutesWithOwnerRouting：基座交给宿主挂载的**插件路由**也必须带上
+// TestRoutesWrapPluginRoutesWithPathOwnerRouting：基座交给宿主挂载的**插件路由**也必须带上
 // 路径形态的 owner 路由。
 //
 // 这条断言看着像内部细节，实际是多副本部署的唯一防线：插件路由上的 id 常常是有归属的
 // （spill 的落盘文件、confirm 的挂起回执），少了这一层，「回调/下载被负载均衡打到别的
 // 副本」就是一次静默失败，而单副本部署完全看不出来。
-func TestRoutesWrapPluginRoutesWithOwnerRouting(t *testing.T) {
+func TestRoutesWrapPluginRoutesWithPathOwnerRouting(t *testing.T) {
 	var ownerHit int32
 	ownerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&ownerHit, 1)
@@ -111,17 +152,19 @@ func TestRoutesWrapPluginRoutesWithOwnerRouting(t *testing.T) {
 	defer ownerSrv.Close()
 	ownerHost := hostOf(t, ownerSrv.URL)
 
-	SetPublicBaseURL("http://10.9.9.9:1") // self != owner
-	defer SetPublicBaseURL("")
+	SetSelfAddr("10.9.9.9:1") // self != owner
+	defer SetSelfAddr("")
 	SetPeers([]string{ownerHost})
 	defer SetPeers(nil)
 	ResetOwnerRoutedPathsForTest()
 	defer ResetOwnerRoutedPathsForTest()
-	RegisterOwnerRoutedPath("/thing/", func(r *http.Request) string {
+
+	// Registry 把进程级前缀定死成本用例的 Config 值（这里没配前缀 → 空串），
+	// 于是登记的 pattern 与请求路径同源。
+	r := New(Config{ConfigPath: writeTokenConfig(t, okTokenConfig)}, nil)
+	RegisterOwnerRoutedRoute("/thing/", func(r *http.Request) string {
 		return strings.TrimPrefix(r.URL.Path, "/thing/")
 	})
-
-	r := New(Config{ConfigPath: writeTokenConfig(t, okTokenConfig)}, nil)
 	var localHit int32
 	// 用 RoutePublic：这条断言与鉴权无关，免鉴权路由同样要能跨副本。
 	r.RoutePublic("/thing/", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -139,6 +182,54 @@ func TestRoutesWrapPluginRoutesWithOwnerRouting(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/thing/"+newIDForOwner(ownerHost), nil))
 	if atomic.LoadInt32(&localHit) != 0 {
 		t.Error("归属兄弟副本的 id 不该由本副本的插件路由处理")
+	}
+	if n := atomic.LoadInt32(&ownerHit); n != 1 {
+		t.Errorf("属主被打中 %d 次，期望 1 次", n)
+	}
+}
+
+// TestOwnerRoutedRouteRegisteredBeforePrefixStillMatches：登记**早于**挂载前缀
+// 生效（插件在 init 里登记就是这样）时，路由仍必须按加了前缀的实际路径生效。
+//
+// 这条守的是一次真实的设计缺陷：表若在登记当刻就把 pattern 换算成实际路径，早登记的那条
+// 会永远按空前缀入表、再也匹配不上，而这种漏配只在多副本部署下暴露。现在换算发生在匹配时。
+func TestOwnerRoutedRouteRegisteredBeforePrefixStillMatches(t *testing.T) {
+	var ownerHit int32
+	ownerSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&ownerHit, 1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer ownerSrv.Close()
+	ownerHost := hostOf(t, ownerSrv.URL)
+
+	SetSelfAddr("10.9.9.9:1") // self != owner
+	defer SetSelfAddr("")
+	SetPeers([]string{ownerHost})
+	defer SetPeers(nil)
+	ResetOwnerRoutedPathsForTest()
+	defer ResetOwnerRoutedPathsForTest()
+	resetRoutePrefix(t)
+
+	// 顺序刻意反着来：先登记，后设前缀（宿主 Mount 发生在插件 Install 之后，正是这个顺序）。
+	RegisterOwnerRoutedRoute("/thing/", func(r *http.Request) string {
+		return strings.TrimPrefix(r.URL.Path, RoutePath("/thing/"))
+	})
+	if err := setRoutePrefix("/mcp/plugin"); err != nil {
+		t.Fatalf("setRoutePrefix: %v", err)
+	}
+
+	if !OwnerRoutedPathRegisteredForTest("/mcp/plugin/thing/") {
+		t.Fatal("登记没有按加了前缀的实际路径生效")
+	}
+	var localHit int32
+	h := WithPathOwnerRouting(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		atomic.AddInt32(&localHit, 1)
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/mcp/plugin/thing/"+newIDForOwner(ownerHost), nil))
+	if atomic.LoadInt32(&localHit) != 0 {
+		t.Error("归属兄弟副本的请求不该由本副本处理")
 	}
 	if n := atomic.LoadInt32(&ownerHit); n != 1 {
 		t.Errorf("属主被打中 %d 次，期望 1 次", n)
@@ -180,15 +271,18 @@ func hostOf(t *testing.T, raw string) string {
 
 // pathRoutingFixture 装一套「本副本 + 路径提取器」的现场：返回本副本 handler
 // 与「本地是否被调用过」的读取闭包。前缀固定 /confirm/，与 confirm 插件的回调一致。
+// 清掉进程级路由前缀：匹配时会给 pattern 补前缀，而本现场的请求路径是裸的，
+// 上一个用例留下的前缀会让它匹配不上。
 func pathRoutingFixture(t *testing.T) (http.Handler, func() bool) {
 	t.Helper()
+	setRoutePrefix("")
 	ResetOwnerRoutedPathsForTest()
 	t.Cleanup(ResetOwnerRoutedPathsForTest)
-	RegisterOwnerRoutedPath("/confirm/", func(r *http.Request) string {
+	RegisterOwnerRoutedRoute("/confirm/", func(r *http.Request) string {
 		return strings.TrimPrefix(r.URL.Path, "/confirm/")
 	})
 	var localHit int32
-	local := WithOwnerRouting(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	local := withMCPOwnerRouting(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&localHit, 1)
 		w.WriteHeader(http.StatusTeapot)
 	}))
@@ -212,8 +306,8 @@ func TestOwnerRoutedPathProxiesToOwner(t *testing.T) {
 	defer ownerSrv.Close()
 	ownerHost := hostOf(t, ownerSrv.URL)
 
-	SetPublicBaseURL("http://10.9.9.9:1") // self != owner
-	defer SetPublicBaseURL("")
+	SetSelfAddr("10.9.9.9:1") // self != owner
+	defer SetSelfAddr("")
 	SetPeers([]string{ownerHost})
 	defer SetPeers(nil)
 
@@ -239,8 +333,8 @@ func TestOwnerRoutedPathProxiesToOwner(t *testing.T) {
 
 // TestOwnerRoutedPathIgnoresSelfOwnedID：属主就是自己 → 本地处理，不反代自己。
 func TestOwnerRoutedPathIgnoresSelfOwnedID(t *testing.T) {
-	SetPublicBaseURL("http://10.9.9.9:1")
-	defer SetPublicBaseURL("")
+	SetSelfAddr("10.9.9.9:1")
+	defer SetSelfAddr("")
 	SetPeers([]string{"10.9.9.9:1"})
 	defer SetPeers(nil)
 
@@ -259,8 +353,8 @@ func TestOwnerRoutedPathIgnoresSelfOwnedID(t *testing.T) {
 // TestOwnerRoutedPathRefusesNonPeerOwner：属主不在 peer 白名单 → 本地处理，
 // 绝不反代（白名单是 SSRF 防线，id 里的地址是调用方可控输入）。
 func TestOwnerRoutedPathRefusesNonPeerOwner(t *testing.T) {
-	SetPublicBaseURL("http://10.9.9.9:1")
-	defer SetPublicBaseURL("")
+	SetSelfAddr("10.9.9.9:1")
+	defer SetSelfAddr("")
 	SetPeers(nil)
 
 	local, localHit := pathRoutingFixture(t)
@@ -278,8 +372,8 @@ func TestOwnerRoutedPathRefusesNonPeerOwner(t *testing.T) {
 // TestOwnerRoutedPathDoesNotLoop：带防环头的请求直接本地处理，
 // 否则两个副本会把同一个请求来回踢。
 func TestOwnerRoutedPathDoesNotLoop(t *testing.T) {
-	SetPublicBaseURL("http://10.9.9.9:1")
-	defer SetPublicBaseURL("")
+	SetSelfAddr("10.9.9.9:1")
+	defer SetSelfAddr("")
 	SetPeers([]string{"1.2.3.4:5"})
 	defer SetPeers(nil)
 
@@ -307,8 +401,8 @@ func TestOwnerRoutedPathGETIsRouted(t *testing.T) {
 	defer ownerSrv.Close()
 	ownerHost := hostOf(t, ownerSrv.URL)
 
-	SetPublicBaseURL("http://10.9.9.9:1")
-	defer SetPublicBaseURL("")
+	SetSelfAddr("10.9.9.9:1")
+	defer SetSelfAddr("")
 	SetPeers([]string{ownerHost})
 	defer SetPeers(nil)
 
@@ -321,5 +415,33 @@ func TestOwnerRoutedPathGETIsRouted(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&ownerHit); n != 1 {
 		t.Errorf("属主被打中 %d 次，期望 1 次", n)
+	}
+}
+
+// TestProxyToOwnerFailureIsNotFoundWithoutTopology：属主在白名单里但连不上时，
+// 转发失败必须回 404、且响应里不带属主地址。
+//
+// 这条判定原先长在 spill 插件自己的转发实现里（那里显式装了 ErrorHandler）。转发统一到
+// 基座之后，它得由基座保证：默认 ErrorHandler 会回 502，而任何持合法 token 的调用方都能
+// 触发这条路——回显属主等于把内网拓扑告诉调用方。
+func TestProxyToOwnerFailureIsNotFoundWithoutTopology(t *testing.T) {
+	const dead = "127.0.0.1:1" // 保留端口，必然拒连
+	SetSelfAddr("10.9.9.9:1")
+	defer SetSelfAddr("")
+	SetPeers([]string{dead})
+	defer SetPeers(nil)
+
+	local, localHit := pathRoutingFixture(t)
+	rec := httptest.NewRecorder()
+	local.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/confirm/"+newIDForOwner(dead), nil))
+	if localHit() {
+		t.Error("归属兄弟副本的请求不该由本副本处理")
+	}
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("属主连不上 => %d，want 404", rec.Code)
+	}
+	if body := rec.Body.String(); strings.Contains(body, dead) {
+		t.Errorf("转发失败的响应泄漏了属主地址: %q", body)
 	}
 }

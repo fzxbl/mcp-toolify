@@ -203,9 +203,9 @@ func TestGCLeavesOtherReplicaFiles(t *testing.T) {
 	withBaseURL(t, "http://127.0.0.1:18011")
 	st := newTestStore(t, time.Minute, time.Hour)
 
-	runtime.SetPublicBaseURL("http://10.9.9.9:18011")
+	runtime.SetSelfAddr("10.9.9.9:18011")
 	peerID := runtime.NewOwnedID()
-	runtime.SetPublicBaseURL("http://127.0.0.1:18011")
+	runtime.SetSelfAddr("127.0.0.1:18011")
 
 	path := filepath.Join(st.dir, peerID+fileExt)
 	if err := os.WriteFile(path, []byte(`{"owner":{"token":"x"}}`), 0600); err != nil {

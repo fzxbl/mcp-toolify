@@ -17,8 +17,6 @@
 package toolify
 
 import (
-	"net/http"
-
 	"github.com/fzxbl/mcp-toolify/runtime"
 )
 
@@ -54,48 +52,13 @@ func New(cfg Config, registrar Registrar) *Registry { return runtime.New(cfg, re
 
 // SetPeerProvider 注册 owner 路由的动态兄弟副本发现函数（返回可达 host:port 列表）。
 // 多副本部署时用它对接任意服务发现作为反代白名单来源，无需静态配置；传 nil 清除。
-// 与 SetPeers 互为覆盖，后调用者生效。应在启动 server 前调用。
+// 静态白名单写在 Config.Peers 里，与本函数互为覆盖，后设置者生效。应在启动 server 前调用。
 func SetPeerProvider(fn func() []string) { runtime.SetPeerProvider(fn) }
 
-// SetPeers 设置静态兄弟副本白名单（host:port）；简单部署可用它替代 provider。
-// 与 SetPeerProvider 互为覆盖，后调用者生效。
-func SetPeers(hosts []string) { runtime.SetPeers(hosts) }
-
-// RegisterOwnerRouted 声明「工具按某 owned-id 参数路由」，供有状态插件接入分布式层。
-func RegisterOwnerRouted(toolName, paramName string) {
-	runtime.RegisterOwnerRouted(toolName, paramName)
-}
-
-// RegisterOwnerRoutedPath 声明「某 HTTP 路由前缀下的请求按路径里的 owned id 路由」，
-// 供有状态插件的 HTTP 回调（带外确认、下载）接入分布式层。
-//
-// prefix 是**请求的实际路径前缀**。宿主用 Config.RoutePrefix 给插件路由加了前缀时，
-// 插件应改用 RegisterOwnerRoutedRoute（传自己的 pattern，由基座补前缀）。
-func RegisterOwnerRoutedPath(prefix string, fn runtime.PathOwnerExtractor) {
-	runtime.RegisterOwnerRoutedPath(prefix, fn)
-}
-
-// RegisterOwnerRoutedRoute 同上，但前缀用插件自己的 pattern 表达，由基座补上
-// Config.RoutePrefix —— 插件不必知道宿主把它挂在哪。
-func RegisterOwnerRoutedRoute(pattern string, fn runtime.PathOwnerExtractor) {
-	runtime.RegisterOwnerRoutedRoute(pattern, fn)
-}
-
-// RoutePath 把插件自己的 pattern 换算成对外绝对路径（含 Config.RoutePrefix）。
-func RoutePath(pattern string) string { return runtime.RoutePath(pattern) }
-
-// PublicURL 返回某 pattern 的对外绝对地址；没有对外地址时为空串。
-func PublicURL(pattern string) string { return runtime.PublicURL(pattern) }
-
-// WithOwnerRouting 包裹 MCP handler：把归属兄弟副本的 tools/call 反代到属主副本。
-// 基座已在内部装好，仅在自定义组装时需要。
-func WithOwnerRouting(next http.Handler) http.Handler { return runtime.WithOwnerRouting(next) }
-
-// NewOwnedID 生成内嵌本副本 host:port 的不透明 id，供有状态插件使用。
-func NewOwnedID() string { return runtime.NewOwnedID() }
-
-// OwnerOf 解出 owned id 的属主 host:port；ok=false 表示无归属 id。
-func OwnerOf(id string) (string, bool) { return runtime.OwnerOf(id) }
+// 有状态插件接入 owner 路由（owned id、按参数/按路由登记、对外 URL）用的是 runtime 包的
+// 同名 API：runtime.NewOwnedID / RegisterOwnerRouted / RegisterOwnerRoutedRoute /
+// RoutePath / PublicURL。本包不做一层同名转发——插件本来就依赖 runtime.Registry，
+// 两套入口并存只会让「该用哪个」变成一次没必要的选择。
 
 // RegisterToolMeta 为「非注解生成、运行时注册」的外部工具登记 labels（准入判据）。
 // 必须在处理请求前调用：未登记 labels 的工具在 token 准入里一律不可见、不可执行

@@ -1,9 +1,13 @@
 package selector
 
 // Match 判定一组 labels 是否满足全部条件（AND）。
-// 沿用 k8s 缺失语义：!= 与 notin 对不存在该 key 的对象也算匹配成功。
-// 条件为空说明 Selector 未经 Parse 构造（Parse 已拒绝空串），按非法态 fail-closed 返回 false。
+// 沿用 k8s 缺失语义：!= 与 notin 对不存在该 key 的对象也算匹配成功；
+// 空 selector（Parse("")）匹配一切。
+// 无条件且非空 selector 说明它没经 Parse 构造，按非法态 fail-closed 返回 false。
 func (s Selector) Match(labels map[string]string) bool {
+	if s.all {
+		return true
+	}
 	if len(s.Requirements) == 0 {
 		return false
 	}

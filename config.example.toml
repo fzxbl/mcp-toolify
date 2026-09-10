@@ -26,7 +26,7 @@
 #     approval system). Omit / empty => ["X-MCP-User"].
 #     These headers are IGNORED unless trust_identity_header = true below.
 # 中: 调用人身份来源请求头列表（有序）：从前到后取第一个非空的头值，填入 Subject.ID。
-#     基座只负责解析身份，「这个人能做什么」由插件判定（数据源通常是值班表、邮件组或
+#     基座只负责解析身份，「这个人能做什么」由插件判定（数据源通常是权限名单、用户组或
 #     外部审批系统）。省略/留空 => ["X-MCP-User"]。
 #     未开启下面的 trust_identity_header 时，这些头会被**忽略**。
 #     （顶层键，必须写在任何 [段] 之前。）
@@ -237,8 +237,10 @@ deny = ["!risk", "!capability", "dangerous=true"]
 #     The id embeds the replica that produced the file; a request landing on
 #     another replica is reverse-proxied to the owner when that address is in the
 #     peer whitelist, otherwise 404. The absolute URL in the summary comes from
-#     PublicBaseURL, which MUST be this replica's directly reachable address — a
-#     load-balancer entry point would send downloads to the wrong replica.
+#     PublicBaseURL (derived from SelfAddr when unset); a domain or VIP is fine there,
+#     since a download landing on any replica is proxied to the owner. SelfAddr itself
+#     MUST stay this replica's directly dialable host:port: it is the identity used to
+#     tell replicas apart.
 #     The dir permission is tightened to 0700 at startup; if the dir is not owned
 #     by this process (or chmod does not stick) startup is refused. The directory
 #     is then held open as a handle (os.OpenRoot), so replacing the path with a
@@ -274,8 +276,9 @@ deny = ["!risk", "!capability", "dangerous=true"]
 #     工具结果原文。在此之上插件还做**属主校验**——落盘时记下的 token 用途名，以及属主
 #     有身份时的 Subject.ID；非属主一律裸 404（不是 403，也不回显属主地址，避免泄漏
 #     存在性与拓扑）。id 内嵌产出该文件的副本地址；请求打到别的副本时，若该地址在 peer
-#     白名单内则反向代理到属主副本，否则 404。摘要里的绝对 URL 取自 PublicBaseURL，
-#     它必须是**本副本可直连的地址**，配成负载均衡入口会让下载落到非属主副本。
+#     白名单内则反向代理到属主副本，否则 404。摘要里的绝对 URL 取自 PublicBaseURL
+#     （不配则由 http://<SelfAddr> 推导）：它可以是域名/VIP，落到任意副本都会被反代到属主。
+#     而 SelfAddr 本身必须是**本副本可直连的 host:port**——它是副本身份。
 #     落盘目录的权限在启动时收紧为 0700；目录不属于本进程（或 chmod 不生效）则拒绝启动。
 #     校验通过后目录会被以句柄形式持有（os.OpenRoot），启动之后把该路径换成软链
 #     也无法把读写重定向到别处。

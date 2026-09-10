@@ -1,118 +1,97 @@
-# audit —— 审计插件（异步、尽力而为）
+# audit — Asynchronous, best-effort audit plugin
 
-把每次 MCP 调用的完整上下文（谁、什么工具、入参、结果、耗时、被谁拒了）交给**使用方注册的
-落地函数**（`Sink`）。插件不决定落地方式：日志、Kafka、数仓、第三方 HTTP 审计中心都行。
+[简体中文](README.zh-CN.md) | English
 
-- 链上位置：**最先安装**，位于插件链最外层——既能记录被内层插件（quota / confirm）拒绝的
-  调用，也能看到内层插件（spill）改写后的最终结果。
-- 投递方式：**异步 + 尽力而为**。中间件在返回路径上只把事件塞进有界队列，落地由后台单
-  worker 完成，**永不阻塞调用返回、永不改变返回值**。
+The `audit` plugin sends the complete context of every MCP request to one or more host-registered sinks: actor, method, tool, arguments, result, latency, headers, and plugin denial metadata. The plugin does not choose the storage backend; a sink may write logs, Kafka, a warehouse, or an external HTTP audit service.
 
-## 为什么没有「审计失败就拒绝返回」这一档
+## Placement and delivery model
 
-审计判定发生在**返回路径**上，此刻工具已经执行完了。同步等落地、失败就拒绝返回，挡不住任何
-副作用（删除、写入已经生效），只是把结果藏起来、还得劝调用方不要重试。真正需要 fail-closed
-的是执行**前**的门：人白名单、二次确认、配额。
+Install `audit` first so it is the outermost middleware plugin. On the return path it can therefore observe denials from inner plugins and the final result after an inner plugin such as `spill` rewrites it. It is not outside the runtime token gate: token admission is installed before all plugins.
 
-代价必须说清楚：「每次调用必有记录」降级为**尽力而为**——队列打满、进程被 `kill -9`、机器掉盘
-都会丢事件。因此丢弃绝不静默：计数 + 限流告警 + `ReadStats()` 供宿主接监控。
+Delivery is asynchronous and best-effort. The request path only attempts a non-blocking enqueue into a bounded queue; one background worker invokes sinks in order. Audit never blocks the MCP response and never changes its return value. There is intentionally no “wait until persisted” or “reject if audit failed” mode: the tool has already executed when audit runs, so fail-closed at this point cannot prevent side effects and would encourage unsafe retries.
 
-## 配置
+The trade-off is explicit: queue overflow, `kill -9`, or disk/machine failure can lose events. Drops are counted, rate-limited in logs, and exposed through `ReadStats()`.
+
+## Configuration
 
 ```toml
 [audit]
-headers          = ["X-Tenant", "User-Agent"]  # 需要采集进事件的请求头；不含凭据类头
-queue_size       = 4096                        # 事件队列容量（条）；省略或 0 取 4096
-flush_timeout    = "3s"                        # 退出时排空队列的预算（时长字符串）；省略取 3s
-max_args_bytes   = 1024                        # 入参进事件前的截断上限（字节）；省略或 0 取 1024
-max_result_bytes = 2048                        # 结果进事件前的截断上限（字节）；省略或 0 取 2048
+headers          = ["X-Tenant", "User-Agent"]
+queue_size       = 4096
+flush_timeout    = "3s"
+max_args_bytes   = 1024
+max_result_bytes = 2048
 ```
 
-### 字段
+| Field | Semantics |
+| --- | --- |
+| `headers` | Optional request headers copied into events. The source is `Call.Headers`, not `*http.Request`; the runtime has already removed credential headers. A configured but absent header is recorded as `"-"`. Empty names fail startup. `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` are rejected at startup. |
+| `queue_size` | Bounded queue length. Default `4096`; `0` selects the default; negative values fail startup. There is no unbounded-queue setting. |
+| `flush_timeout` | Positive Go duration used to drain the queue during shutdown. Default `3s`. It adds directly to stop/restart time, so do not configure it excessively. Invalid or non-positive values fail startup. |
+| `max_args_bytes` | Argument snapshot limit in bytes. Default `1024`; `0` selects the default. Negative values fail. Truncation cannot be disabled. |
+| `max_result_bytes` | Result snapshot limit in bytes. Default `2048`; `0` selects the default. Negative values fail. Truncation cannot be disabled. |
 
-- `headers`（默认空）：采集哪些请求头。数据源只有 `Call.Headers`（基座已剔除
-  `Authorization` / `Proxy-Authorization` / `Cookie` / `Set-Cookie`），配了凭据类头**启动失败**
-  ——否则你拿到的是一列恒为 `-` 的字段却以为采到了。配了但请求里没有的头记 `"-"`，与「没配这个头」
-  区分开。
-- `queue_size`（默认 `4096`）：队列容量。越大越能吸收落地抖动，但每条事件占内存（入参/结果已在
-  快照时截断到 KiB 级，4096 条约几 MiB）。不能为负；`0` = 取默认值。刻意**没有**「无界队列」的
-  写法——落地方卡住时无界队列就是一条通往 OOM 的路，而丢事件至少是有计数、有告警、能被监控看见的。
-- `flush_timeout`（默认 `3s`，duration **字符串**）：进程退出时排空队列的时间预算，超出的按丢弃
-  计数。它直接加在服务停止耗时上（发布、重启都要等它），别配长。必须为正。
-- `max_args_bytes`（默认 `1024`）/ `max_result_bytes`（默认 `2048`）：入参与结果进事件前的截断
-  上限，单位字节。不能为负；`0` = 取默认值，**没有**关闭截断的写法——一次几十兆的原文进事件，
-  内存与审计后端都会被打满，而「关掉截断」这种开关一旦存在，出事时才会被发现它开着。
+Configuration errors fail startup rather than silently activating defaults.
 
-写错任何一项都让**启动失败**，不会静默用默认值（静默的话部署方会以为自己配的策略在生效）。
-
-## Sink 契约
+## Sink API
 
 ```go
 audit.OnEvent(func(e audit.Event) error {
-    // 落到你自己的后端：日志、MQ、HTTP 审计中心……
+    // Write to the host's log, queue, warehouse, or audit service.
     return nil
 })
 ```
 
-- **必须在开始接流之前注册**（`Install` 之前或之后都行，但要在 `Handlers()`/`Start` 之前）：
-  一个都没注册时**启动失败**。「审计插件在场但一条也没落」是静默失效，而 `required_plugins`
-  只校验插件在场。接流之后再把 Sink 清空同样会被计成 `Failed` 并告警（worker 侧兜底）。
-- 可注册多个，按注册顺序依次调用；一个失败或 panic 不影响其余（逐个 recover）。
-- 返回 `error` 会计入 `ReadStats().Failed` 并触发限流告警——**不会**影响任何调用结果。
-- Sink 在 worker goroutine 上执行，**不在**请求路径上：慢一点只会挤占队列，不会拖慢调用方。
-  真正的耗时大户（远端 HTTP、批量攒批）请自己在 Sink 里做超时与重试。
-- `Event` 是**完全自有的值拷贝**（labels 深拷、入参/结果已截断成 string、Meta 拍平成新 map），
-  交给别的 goroutine 既没有 data race 也不会拖住大对象引用。
+Register at least one sink before traffic starts: registration may happen before or after `Install`, but must happen before `Handlers()` or `Start()`. With no sink, startup fails. If all sinks are later removed, events are counted as failed and logged. Multiple sinks run in registration order; an error or panic in one sink does not prevent the remaining sinks from running. Sink errors and panics do not affect the MCP result. Sink code runs on the worker goroutine, so implement its own timeout and retry policy for remote backends.
 
-`SetArgsRedactor(fn)` 注册入参脱敏钩子（可选，在截断之前执行）。传入的 `args` 是本插件拷贝出来的
-副本，钩子就地涂改也伤不到真实请求字节。
+`Event` is an owned value snapshot: labels are deep-copied, arguments/results are bounded strings, and metadata is flattened into a new map. It can be retained or passed to another goroutine without retaining large request objects or introducing a data race.
 
-## 事件字段要点
-
-- `Subject` / `Labels` 是**进入链时的快照**：audit 在最外层，返回路径上 `Call.Subject`（指针）
-  已可能被内层插件改过，直接读会记成被改写后的身份。
-- `HasIdentity` / `ActorID()`：基座默认不信任客户端身份头，`Subject.ID` 常态为空。`ActorID()`
-  在无身份时返回 `(anonymous)` 而不是空串，避免「匿名调用」与「某个 id 为空的人」混在一起。
-- `Args`：入参原文（先脱敏、再截断），**可能含非法 UTF-8 字节**（截断只剥掉尾部那个不完整字符，
-  中段的坏字节原样保留）。Postgres text、部分 JSON 序列化器会对非法 UTF-8 直接报错，落地前请自行
-  转义或替换。
-- `Result`：`tools/call` 是 JSON **片段**（截断后可能不完整），只供人读与全文检索，**不要
-  Unmarshal**；`tools/list` 是工具名列表，按个数裁剪，始终是合法 JSON。
-- `DeniedBy` / `DenyReason` / `Meta`：`Meta` 是 `Call.Meta` 的通用透传（拍平成字符串，键数
-  ≤ 32、单值 ≤ 256 字节，超出时按键名排序取前 N 个以保证不同进程截出同一批键）。外置插件想把
-  自己的上下文送进审计流，这是唯一通道。
-- `ResultErr`：结果序列化失败的原因（不静默丢字段）。
-
-## 两条覆盖不到的地方（务必知道）
-
-- **基座 token 准入的拒绝不进审计流**：那一层固定装在插件链之前，`tools/call` 被它拒时直接返回，
-  本插件根本不会被调用——越权尝试在审计流里是 0 条事件、HTTP 状态还是 200。
-- **`tools/list` 记的是过滤前的全量清单**：基座按 token 过滤发生在本插件记录之后，所以
-  `Event.Result` 不等于该 token 实际看到的那份。
-
-两者目前的唯一信号是基座打的 `[mcp] warning: 准入拒绝 …` / `tools/list 过滤 …` 日志（限流）。
-做「谁看见 / 试过哪些工具」这类权限审计时，必须把那两条日志一并采集。
-
-另外：**工具入参不得承载密文**。`login(user, password)` 这类工具的密文会原样进长期审计存储；
-基座不认识字段语义，代替不了你判断——确有需要时用 `SetArgsRedactor`。
-
-## 可观测性：`ReadStats()`
+Use the optional redaction hook before truncation:
 
 ```go
-s := audit.ReadStats() // Enqueued / Dropped / Delivered / Failed
+audit.SetArgsRedactor(func(tool string, args []byte) []byte {
+    // Return redacted JSON bytes.
+    return args
+})
 ```
 
-未安装或已停止时返回零值（监控上看到的是「没在跑」，而不是一组不再增长的旧数）。
+The hook receives a plugin-owned copy, so in-place edits cannot mutate the real request arguments. A `nil` return means empty arguments. Do not put secrets in tool arguments unless a redactor removes them; the runtime does not understand field semantics.
 
-- `Dropped` 持续增长 = 队列容量或落地速度不够（调 `queue_size`、或把过滤搬进 Sink）。
-- `Failed` 增长 = Sink 本身有问题（后端挂了、编码不被接受、panic）。
+## Event fields and limits
 
-丢弃与落地失败都会打日志，但**按类限流**：每类首条立即打，之后每分钟最多一条，汇总行带
-「被压制多少条 / 累计多少条」。这两类都是持续性故障，逐条打会按 QPS 刷满磁盘。
+`Event` contains `At`, `LogID`, `Method`, `Tool`, `Labels`, `Subject`, `HasIdentity`, `Args`, `ArgsTruncated`, `Result`, `ResultTruncated`, `ResultErr`, `Cost`, `IsError`, `Err`, `DeniedBy`, `DenyReason`, `Headers`, and `Meta`.
 
-## 启动与退出日志
+- `At` is the time the call entered audit. `LogID` matches the HTTP response log ID and can join audit events with access logs. `Method` includes `initialize`, `ping`, notifications, `tools/list`, and `tools/call`; filter in the sink as needed. `Tool` is empty for non-call methods.
+- `Labels` and `Subject` are entry-time snapshots. `ActorID()` returns `Subject.ID`, or `"(anonymous)"` (`AnonymousActor`) when no trusted identity exists. `HasIdentity` distinguishes the two cases. The default runtime does not trust client identity headers, so `Subject.ID` is commonly empty.
+- `Args` is the original argument JSON after redaction and byte truncation. Truncation removes only an incomplete trailing UTF-8 rune; invalid bytes in the middle are preserved. Sinks targeting PostgreSQL text or strict JSON must normalize or escape invalid UTF-8 themselves.
+- For `tools/call`, `Result` is a human/search-oriented JSON fragment and may be incomplete after truncation; do not unmarshal it. For `tools/list`, it is a valid JSON array of tool names, truncated by item count. `ResultErr` records serialization errors instead of silently dropping the result.
+- `IsError` preserves the tool result error state. `Err` is the protocol-level error returned by the chain. `DeniedBy` and `DenyReason` are read from `Call.Meta`; they are empty when no plugin denied the call.
+- `Headers` contains only configured headers, with `"-"` for a missing value.
+- `Meta` is the generic pass-through of `Call.Meta`, flattened with `fmt.Sprintf("%v")`. It is capped at 32 keys and 256 bytes per value; keys are sorted before selecting the first 32 for deterministic cross-process snapshots. This is the only generic channel for other plugins to add audit context.
 
-- 启动（`[mcp] audit:`）：`异步投递（尽力而为，不阻塞返回） sinks=N queue_size=… flush_timeout=…
-  max_args_bytes=… max_result_bytes=… headers=[…]`。`sinks` 是**真正接流时**的条数
-  （`Install` 之后注册的也算进去）。
-- 退出：`投递收尾 enqueued=… delivered=… failed=… dropped=…`，一眼看清这次运行到底丢没丢。
+## Coverage limits and security
+
+Token admission is outside the plugin chain. A `tools/call` rejected by the runtime token gate never reaches audit; the HTTP status remains 200 and no audit event is emitted. Likewise, `tools/list` filtering happens after this plugin records the response, so `Event.Result` contains the pre-filter full registry, not necessarily what the token saw. The runtime's rate-limited warning logs (`[mcp] warning: 准入拒绝 ...` and `tools/list 过滤 ...`) are currently the only signals for those cases and must be collected for permission auditing.
+
+The runtime strips `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` before audit; the plugin also rejects configuring them. Nevertheless, arguments may contain application secrets such as passwords. Use `SetArgsRedactor` or redesign the tool contract before sending events to long-term storage.
+
+## Observability
+
+```go
+s := audit.ReadStats() // Enqueued, Dropped, Delivered, Failed
+```
+
+`ReadStats()` returns zero values when the plugin is not installed or has stopped, rather than stale counters.
+
+- `Enqueued`: events successfully placed on the queue.
+- `Dropped`: queue-full or shutdown drops. Persistent growth means the queue or sink throughput is insufficient.
+- `Delivered`: events delivered successfully to every sink.
+- `Failed`: at least one sink returned an error or panicked, or no sink remained.
+
+Drop and sink-failure logs are rate-limited per class: the first event is immediate, then at most one per minute, with suppressed and cumulative counts.
+
+Startup logs use the `[mcp] audit:` prefix and report the effective sink count, queue size, flush timeout, argument/result limits, and headers. Shutdown logs report `enqueued`, `delivered`, `failed`, and `dropped`. The worker is single-threaded to preserve per-replica delivery order.
+
+## Shutdown
+
+`OnStop` first closes the enqueue gate, then drains the queue within `flush_timeout`. Events remaining after the budget are counted as dropped. A stuck sink cannot hold shutdown indefinitely; the worker has an additional safety wait and logs if it does not exit in time.

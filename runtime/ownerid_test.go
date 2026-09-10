@@ -54,27 +54,43 @@ func TestOwnerOfRejectsPlainAndGarbage(t *testing.T) {
 	}
 }
 
-func TestSetPublicBaseURLParsesSelfHostPort(t *testing.T) {
-	old := PublicBaseURL()
-	t.Cleanup(func() { SetPublicBaseURL(old) })
+// TestSelfAddrAndPublicBaseURL：两个地址各管一件事——SelfAddr 是副本身份（id 归属、拨号），
+// PublicBaseURL 是交给外部的入口（拼链接）。没配后者时由前者推导，配了则互不影响。
+func TestSelfAddrAndPublicBaseURL(t *testing.T) {
+	oldAddr, oldBase := SelfHostPort(), PublicBaseURL()
+	t.Cleanup(func() { SetSelfAddr(oldAddr); SetPublicBaseURL(oldBase) })
 
-	SetPublicBaseURL("http://10.20.30.40:8011/")
-	if got := PublicBaseURL(); got != "http://10.20.30.40:8011" {
-		t.Errorf("PublicBaseURL() = %q, want trailing slash trimmed", got)
-	}
+	SetSelfAddr("10.20.30.40:8011")
+	SetPublicBaseURL("")
 	if hp := SelfHostPort(); hp != "10.20.30.40:8011" {
 		t.Fatalf("self host:port = %q, want 10.20.30.40:8011", hp)
 	}
+	if got := PublicBaseURL(); got != "http://10.20.30.40:8011" {
+		t.Errorf("PublicBaseURL() = %q, want 由 SelfAddr 推导", got)
+	}
+
+	SetPublicBaseURL("https://mcp.example.com/")
+	if got := PublicBaseURL(); got != "https://mcp.example.com" {
+		t.Errorf("PublicBaseURL() = %q, want 末尾斜杠被去掉", got)
+	}
+	if hp := SelfHostPort(); hp != "10.20.30.40:8011" {
+		t.Errorf("设置对外入口把副本身份改成了 %q：两者必须正交", hp)
+	}
+
+	SetSelfAddr("")
 	SetPublicBaseURL("")
 	if hp := SelfHostPort(); hp != "" {
-		t.Fatalf("empty base should yield empty self host:port, got %q", hp)
+		t.Fatalf("empty self addr expected, got %q", hp)
+	}
+	if got := PublicBaseURL(); got != "" {
+		t.Fatalf("两者都没设时 PublicBaseURL 应为空串，got %q", got)
 	}
 }
 
 func TestNewOwnedIDEmbedsSelf(t *testing.T) {
-	old := PublicBaseURL()
-	t.Cleanup(func() { SetPublicBaseURL(old) })
-	SetPublicBaseURL("http://127.0.0.1:9009")
+	old := SelfHostPort()
+	t.Cleanup(func() { SetSelfAddr(old) })
+	SetSelfAddr("127.0.0.1:9009")
 
 	hp, ok := OwnerOf(NewOwnedID())
 	if !ok || hp != "127.0.0.1:9009" {

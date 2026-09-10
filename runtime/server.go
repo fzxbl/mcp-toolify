@@ -16,9 +16,14 @@ import (
 type Config struct {
 	// Addr 是 HTTP 监听地址，例如 ":8080"；为空时由系统分配端口。
 	Addr string
-	// PublicBaseURL 是 agent 侧可直连的对外基础地址（如 http://host:8011）。
-	// 跨机多副本部署时必须设置：有归属 id 与 owner 路由都靠它判断「本副本是谁」；
-	// 为空时回退到实际监听地址（仅同机/本地场景可用）。
+	// SelfAddr 是**本副本可直连**的 host:port（如 10.1.2.3:8011）。它是副本身份：
+	// owned id 内嵌它、owner 路由据它判断 id 归属、副本间反代据它拨号，因此不能填
+	// 负载均衡地址（那样所有副本看起来是同一个）。为空时独立启动回退到实际监听地址
+	// （仅同机/本地场景可用）；嵌入宿主时必须显式配置。
+	SelfAddr string
+	// PublicBaseURL 是**交给外部**的入口地址（如 https://mcp.example.com），只用于
+	// PublicURL 拼给调用方的绝对链接。可以是域名/VIP——属主信息在 id 里，请求落到任意
+	// 副本都会被反代到属主。为空时回退 "http://" + SelfAddr。
 	PublicBaseURL string
 	// ConfigPath 指向含 [[tokens]] 等段的 TOML 文件。基座 token 鉴权必须配置，
 	// 为空即启动失败。
@@ -34,12 +39,6 @@ type Config struct {
 	// Peers 是静态兄弟副本白名单（host:port），供 owner 路由校验反代目标。
 	// 多副本部署通常改用 SetPeerProvider 对接服务发现。
 	Peers []string
-	// RoutePrefix 是插件 HTTP 路由的对外前缀（如 "/mcp/plugin"）；空表示挂在根上。
-	// 必须以 "/" 开头、不以 "/" 结尾、不含通配符与空白，非法即启动失败。
-	//
-	// 基座把它施加到三处：Routes() 交出的 pattern、插件给 agent 的绝对 URL、插件转发到
-	// 属主副本的目标路径。详见 runtime/routeprefix.go。
-	RoutePrefix string
 }
 
 // Registrar 是生成代码暴露的注册函数类型（通常是生成的 tools.RegisterAll）。
@@ -66,11 +65,11 @@ func (r *Registry) Start(ctx context.Context) error {
 	}
 	defer ln.Close()
 
-	// 对外可直连的基础地址：优先用显式配置的 PublicBaseURL（跨机部署必填），
-	// 否则回退到实际监听地址（仅同机/本地场景可用）。必须在 build 之前设置，
-	// 插件在 Install 之后可能已经据此拼过 URL。
-	if r.cfg.PublicBaseURL == "" {
-		SetPublicBaseURL("http://" + ln.Addr().String())
+	// 副本身份：优先用显式配置的 SelfAddr（跨机部署必填），否则回退到实际监听地址
+	// （仅同机/本地场景可用）。必须在 build 之前设置，插件在 Install 之后可能已经据此
+	// 生成过 owned id 或拼过 URL。对外入口（PublicBaseURL）没配就由它推导，见 PublicBaseURL()。
+	if r.cfg.SelfAddr == "" {
+		SetSelfAddr(ln.Addr().String())
 	}
 
 	handler, err := r.build()

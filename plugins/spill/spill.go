@@ -226,7 +226,7 @@ var defaultDir atomic.Pointer[string]
 
 // SetDefaultDir 设置「配置里没写 dir 时」使用的落盘目录，必须在 Install 之前调用。
 //
-// 为什么需要它：落盘目录常常只有**运行期**才知道——GDP 之类的框架把它算成
+// 为什么需要它：落盘目录常常只有**运行期**才知道——框架可能把它算成
 // `<应用根目录>/data/spill`，容器里又可能是挂进来的卷。静态配置文件写不出这个值，
 // 而缺了它就会退回系统临时目录：那是可预测路径、重启即清，工具结果原文不该落在那。
 //
@@ -288,10 +288,19 @@ func Install(r *runtime.Registry) error {
 		"preview_bytes=%d max_file_mib=%d max_total_mib=%d dir=%s",
 		o.OnError, o.Threshold, o.TTL, o.GCInterval, o.PreviewBytes,
 		o.Quota.MaxFileBytes>>mibShift, o.Quota.MaxTotalBytes>>mibShift, o.Dir)
-	log.Printf("[mcp] spill: 下载鉴权粒度=token 用途名 + 属主有身份时再比对 Subject.ID；"+
-		"基座默认不信任身份头（Subject.ID 为空），此时同一 token 用途名的调用方之间"+
-		"可以互相下载 %s 结果", runtime.RoutePath(downloadPath))
+	// 这行要回显下载端点的**实际路径**，所以打在 build 期钩子里：挂载前缀由宿主在
+	// Registry.Mount 里给出，那发生在 Install 之后；在 Install 里打会回显没加前缀的路径。
+	r.OnBuild(func() error {
+		log.Printf("[mcp] spill: 下载鉴权粒度=token 用途名 + 属主有身份时再比对 Subject.ID；"+
+			"基座默认不信任身份头（Subject.ID 为空），此时同一 token 用途名的调用方之间"+
+			"可以互相下载 %s 结果", runtime.RoutePath(downloadPath))
+		return nil
+	})
 	r.Route(downloadPath, st.downloadHandler())
+	// 下载端点也走基座的同一套 owner 路由（按路径里的 id）：内容只在产出它的副本本地，
+	// 下载 URL 经过 LB 后落到哪个副本是随机的，没有这条声明时 (N-1)/N 的请求都会 404。
+	// 与上面 spill_explore 的按参数路由是同一个机制的两种提取形态，转发由基座统一实现。
+	runtime.RegisterOwnerRoutedRoute(downloadPath, st.downloadOwnerExtractor)
 	r.Use(middleware(o, st))
 	return nil
 }
@@ -323,9 +332,9 @@ func middleware(o options, st *store) runtime.Middleware {
 // 只跳过两类：链上出错（没有结果可落）、非 tools/call 的结果（把 tools/list 换成
 // 下载链接等于把工具清单藏起来）。
 //
-// **错误态结果（IsError）也要落盘**：曾经把它当例外放过，结果是「5MiB 的错误文案
-// 原样进上下文」——一条静默的超大路径，与本插件「没有静默这一档」的承诺自相矛盾
-// （审查 I4）。改写后的结果保留 IsError，模型仍然知道这次调用失败了。
+// **错误态结果（IsError）也要落盘**：否则「5MiB 的错误文案原样进上下文」就是一条静默的
+// 超大路径，与本插件「没有静默这一档」的承诺自相矛盾。改写后的结果保留 IsError，
+// 模型仍然知道这次调用失败了。
 func spillable(res *runtime.Result, err error) bool {
 	return err == nil && res != nil && res.Tool != nil
 }
@@ -566,8 +575,8 @@ func structuredBytes(v any) int {
 // extraBytes 返回一个可选小字段（Meta / Annotations / Icons / Size）序列化后的长度。
 //
 // nil 走快路径直接记 4 字节（"null"），不进 json.Marshal —— 常见结果这几个字段全是
-// nil，原来的写法对每段内容都要为 nil 白白 marshal 两次（实测 2 allocs/op，
-// 复审 M-1）。非 nil 时才真序列化：按 MCP 协议它们都是小对象，代价可以忽略。
+// nil，为 nil 段调用 json.Marshal 是白白的分配（2 allocs/op）。非 nil 时才真序列化：
+// 按 MCP 协议它们都是小对象，代价可以忽略。
 // 一个参数一个调用（不用可变参数）：可变参数会为 []any 分配一次，
 // 那会让「nil 字段零分配」这条根本达不到。序列化失败即认为体积未知。
 func extraBytes(v any) int {

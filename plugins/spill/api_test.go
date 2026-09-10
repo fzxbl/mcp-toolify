@@ -175,7 +175,7 @@ func TestOwnedContentRefusesOtherSubject(t *testing.T) {
 	}
 }
 
-// TestSetDefaultDir：宿主的落盘目录常常只有运行期才知道（GDP 的 env.DataDir()、
+// TestSetDefaultDir：宿主的落盘目录常常只有运行期才知道（框架算出的应用根目录、
 // 容器里挂进来的卷），静态配置文件写不出来；同时配置里显式写了 dir 就必须赢。
 func TestSetDefaultDir(t *testing.T) {
 	hostDir := t.TempDir()

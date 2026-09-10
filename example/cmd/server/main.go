@@ -60,11 +60,15 @@ func main() {
 	addr := flag.String("addr", ":8011", "http listen addr")
 	config := flag.String("config", "./example/conf/mcp.toml",
 		"path to the TOML config (must contain [[tokens]])")
+	self := flag.String("self-addr", "",
+		"this replica's directly reachable host:port (replica identity), e.g. 10.1.2.3:8011")
 	public := flag.String("public-base-url", "",
-		"this replica's directly reachable base URL, e.g. http://10.1.2.3:8011")
+		"outward entry for links handed to callers, e.g. https://mcp.example.com "+
+			"(defaults to http://<self-addr>)")
 	flag.Parse()
 
-	r, err := build(runtime.Config{Addr: *addr, ConfigPath: *config, PublicBaseURL: *public})
+	r, err := build(runtime.Config{Addr: *addr, ConfigPath: *config,
+		SelfAddr: *self, PublicBaseURL: *public})
 	if err != nil {
 		log.Fatalf("装配插件失败: %v", err)
 	}

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -325,4 +326,33 @@ func spillIDOf(t *testing.T, text string) string {
 		t.Fatalf("%s 之后没有合法形状的 id: %.400q", downloadPath, text[i:])
 	}
 	return id
+}
+
+// TestExploreToolOwnerRoutedParamMatchesInput：spill_explore 必须登记「按参数做 owner
+// 路由」，且登记的参数名要和 exploreInput 里那个字段的 json 名一致。
+//
+// 为什么需要它：落盘内容只在产出它的副本本地，探索请求经 LB 落到别的副本时全靠这条登记
+// 反代回属主。而基座取 id 的方式是 args[param].(string)——工具改名、或 exploreInput 的
+// json tag 改了没同步登记，都只是「取不到 id → 静默不路由」，编译与单副本测试全绿，
+// 多副本上线才表现为「spill_explore 说内容不存在」。
+func TestExploreToolOwnerRoutedParamMatchesInput(t *testing.T) {
+	installed(t, `required_plugins = ["spill"]
+`+baseTokens)
+
+	param, ok := runtime.OwnerRoutedParamForTest(exploreToolName)
+	if !ok {
+		t.Fatalf("%s 没有登记 owner 路由：多副本下探索请求会落到非属主副本", exploreToolName)
+	}
+	rt := reflect.TypeOf(exploreInput{})
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		if name, _, _ := strings.Cut(f.Tag.Get("json"), ","); name != param {
+			continue
+		}
+		if f.Type.Kind() != reflect.String {
+			t.Errorf("exploreInput.%s 的类型是 %s，owned id 必须是 string", f.Name, f.Type)
+		}
+		return
+	}
+	t.Errorf("exploreInput 里没有 json 名为 %q 的字段：登记的参数名与入参 schema 不一致", param)
 }

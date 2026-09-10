@@ -26,8 +26,7 @@ func Chain(mws []Middleware, final Handler) Handler {
 // 由基座在组装 server 时通过 AddReceivingMiddleware 挂载。
 //
 // mws 是「基座中间件 + 插件链」的完整顺序（基座的 token 准入固定在最前）。
-// 曾经把两组分开传，唯一的理由是重放路径只跑基座那一组；重放机制删掉之后
-// 只剩一条请求路径，合成一个 slice 即可。
+// 只有一条请求路径，合成一个 slice 即可。
 func asMCPMiddleware(mws []Middleware) mcp.Middleware {
 	// 全链只在挂载时拼一次：每请求 append 一遍是白白的分配，且会写到调用方的底层数组上。
 	all := make([]Middleware, 0, len(mws))

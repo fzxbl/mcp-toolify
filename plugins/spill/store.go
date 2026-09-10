@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -48,8 +47,6 @@ const (
 	// 同一台机器上两个进程共享默认目录时，各自 ttl 不同，直接按自己的 ttl 删
 	// 会把对方仍在用的文件删掉（审查实测）。
 	adoptGrace = 24 * time.Hour
-	// forwardedHeader 标记「这次下载已经被转发过一次」，防止副本之间来回转发成环。
-	forwardedHeader = "X-Mcp-Spill-Forwarded"
 )
 
 // idPattern 是**唯一**允许拼进文件路径的 id 形状，与基座 runtime.NewOwnedID 的
@@ -589,15 +586,18 @@ func (s *store) pathFor(id string) (string, bool) {
 
 // url 返回该 id 的对外下载地址；没有**可用**的对外地址时返回空串并告警一次。
 //
-// 每次现取 runtime.PublicBaseURL()：基座在 Start 里才设置它，那时插件的 Install
+// 每次现取对外地址：基座在 Start / Handlers 里才设置它，那时插件的 Install
 // 早就跑完了，Install 期缓存下来的一定是空串。
 //
-// 「可用」要单独判一次：未显式配置 PublicBaseURL 时，基座回退到实际监听地址，
-// 监听 ":8011" 得到的是 http://[::]:8011 —— 一个 agent 根本连不上的通配地址
-// （审查实测）。这种 URL 放进模型上下文比不给更糟，所以宁可不给 URL、只给本地路径，
-// 并打一条启动级告警提示部署方显式配置本副本可直连的地址。
+// 取的是 runtime.PublicBaseURL()（配了 Config.PublicBaseURL 就是它，可为域名/VIP；
+// 否则由本副本的 SelfAddr 推导）——下载 URL 是给 agent 与人用的，落到哪个副本都会被基座的
+// owner 路由反代到属主，所以它不必是直连地址。
 //
-// 路径走 runtime.PublicURL：宿主可用 Config.RoutePrefix 把本端点挂到任意前缀之下，
+// 「可用」要单独判一次：未显式配置时基座回退到实际监听地址，监听 ":8011" 得到的是
+// http://[::]:8011 —— 一个 agent 根本连不上的通配地址（审查实测）。这种 URL 放进模型
+// 上下文比不给更糟，所以宁可不给 URL、只给本地路径，并打一条启动级告警。
+//
+// 路径走 runtime.PublicURL：宿主可用 Registry.Mount 把本端点挂到任意前缀之下，
 // URL 必须与实际挂载点同源。
 func (s *store) url(id string) string {
 	base := runtime.PublicBaseURL()
@@ -605,9 +605,10 @@ func (s *store) url(id string) string {
 		return runtime.PublicURL(downloadPath) + id
 	}
 	warnBaseOnce.Do(func() {
-		log.Printf("[mcp] spill warning: 对外地址 %q 不可用于下载（未配置 PublicBaseURL 或"+
-			"其 host 是通配地址）：摘要里不会给下载 URL。多副本部署请把 PublicBaseURL 配成"+
-			"本副本可直连的地址（不要配 LB 地址，那样 id 无法区分副本）", base)
+		log.Printf("[mcp] spill warning: 对外地址 %q 不可用于下载（未配置 PublicBaseURL /"+
+			"SelfAddr，或其 host 是通配地址）：摘要里不会给下载 URL。多副本部署请把"+
+			"PublicBaseURL 配成 agent 可达的入口（域名/VIP 均可），把 SelfAddr 配成本副本可"+
+			"直连的 host:port（后者不要配 LB 地址，那样 id 无法区分副本）", base)
 	})
 	return ""
 }
@@ -866,18 +867,14 @@ func (s *store) downloadHandler() http.Handler {
 		}
 		// 只取路径最后一段：本端点可能被宿主挂在任意前缀之下（Handlers 把路由交给
 		// 宿主自己 mount），按固定前缀裁剪会在换了挂载点之后整体失效。
-		id := r.URL.Path
-		if i := strings.LastIndex(id, "/"); i >= 0 {
-			id = id[i+1:]
-		}
+		id := idFromDownloadPath(r.URL.Path)
 		if !idPattern.MatchString(id) {
 			// 形状不合法的 id 一律 404，不回显它：回显等于给探测者一面镜子。
 			http.NotFound(w, r)
 			return
 		}
-		if s.forwardToOwner(w, r, id) {
-			return
-		}
+		// 归属兄弟副本的 id 在进入本 handler 之前就已被基座反代走（见 Install 里的
+		// runtime.RegisterOwnerRoutedRoute）；能走到这里说明该由本副本回答。
 		name, kind, format, ok := s.resolve(id)
 		if !ok {
 			http.NotFound(w, r)
@@ -965,51 +962,44 @@ func (s *store) serveContent(w http.ResponseWriter, r *http.Request, id string,
 		io.NewSectionReader(f, off, info.Size()-off))
 }
 
-// forwardToOwner 在 id 归属于某个**已知兄弟副本**时，把这次下载反代到属主副本，
-// 返回是否已经处理完这次请求。
+// downloadOwnerExtractor 是基座路径 owner 路由的提取器（见 Install 里的
+// runtime.RegisterOwnerRoutedRoute）：从下载路径里取出 id，交由基座判断该 id 是否
+// 归属某个已知兄弟副本，若是则把这次下载单跳反代过去。
 //
-// 为什么需要：id 内嵌产出该文件的副本地址，但文件只存在那台机器的本地磁盘上。
+// 为什么需要转发：id 内嵌产出该文件的副本地址，但文件只存在那台机器的本地磁盘上。
 // agent 侧拿到的下载 URL 常常经过 LB（或干脆是 LB 地址），落到哪个副本是随机的，
-// 没有转发时 (N-1)/N 的请求都会 404。转发保留 Authorization（属主副本会再认证一次，
-// 属主判定也在那边执行），并打一个 forwardedHeader 防止两个副本互相转发成环。
+// 没有转发时 (N-1)/N 的请求都会 404。
+//
+// 返回空串即「本次不参与 owner 路由」，用来表达两种本地优先的情形：
+//   - id 形状不合法：交给 handler 回 404（那里不回显 id）；
+//   - 本地就有这份文件（同机多副本共享目录时会这样）：不必绕一趟属主。
 //
 // 前提：PublicBaseURL 必须是**本副本可直连的地址**（Pod IP 之类），不能配成 LB
 // 地址 —— 配 LB 时所有副本的 SelfHostPort 相同，id 里也就没有区分副本的信息。
-// 转发目标只取 runtime.PeerAllowed 认可的地址（服务发现或静态 peers），防 SSRF。
+// 转发目标只取 runtime.PeerAllowed 认可的地址（服务发现或静态 peers），防 SSRF；
+// 属主副本会重新做一次 token 认证与属主判定，转发不授予任何额外权限。
 //
 // 已知风险（复审 M-3，沿用基座 runtime/owner_routing.go 的既有约定，本插件不单独改）：
-// 这里走的是明文 http://，且把调用方的 Bearer token 原样带给属主副本 —— 跨机部署时
+// 副本间走的是明文 http://，且把调用方的 Bearer token 原样带给属主副本 —— 跨机部署时
 // 内网抓包即可拿到该 token。要收掉这条风险需要在 peer 之间加 TLS、或改用副本间的
-// 内部凭据（属主副本再自行判定属主），那是基座层面的统一改动。
-func (s *store) forwardToOwner(w http.ResponseWriter, r *http.Request, id string) bool {
-	if r.Header.Get(forwardedHeader) != "" {
-		return false // 已经是转发来的：本地没有就是真没有
-	}
-	owner, ok := runtime.OwnerOf(id)
-	if !ok || owner == runtime.SelfHostPort() || !runtime.PeerAllowed(owner) {
-		return false
+// 内部凭据，那是基座层面的统一改动。
+func (s *store) downloadOwnerExtractor(r *http.Request) string {
+	id := idFromDownloadPath(r.URL.Path)
+	if !idPattern.MatchString(id) {
+		return ""
 	}
 	if _, _, _, ok := s.resolve(id); ok {
-		return false // 本地就有（同机多副本共享目录时会这样），不必转发
+		return "" // 本地就有，不必转发
 	}
-	target := &url.URL{Scheme: "http", Host: owner}
-	rp := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			req.URL.Scheme = target.Scheme
-			req.URL.Host = target.Host
-			req.Host = target.Host
-			// 属主副本上的路径 = 宿主的挂载前缀（runtime.RoutePath）+ id，
-			// 与给 agent 的下载 URL 同源。
-			req.URL.Path = runtime.RoutePath(downloadPath) + id
-			req.Header.Set(forwardedHeader, "1")
-		},
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			// 转发失败不回显属主地址：任何持合法 token 的人都能触发它，
-			// 回显等于把内网拓扑告诉调用方。
-			log.Printf("[mcp] spill warning: 转发 %s 到属主副本 %s 失败: %v", id, owner, err)
-			http.NotFound(w, r)
-		},
+	return id
+}
+
+// idFromDownloadPath 从下载请求的路径里取 id：只取最后一段。
+// 本端点可能被宿主挂在任意前缀之下（Registry.Mount 给出的前缀，或 Handlers 模式下由宿主自己
+// mount），按固定前缀裁剪会在换了挂载点之后整体失效。
+func idFromDownloadPath(path string) string {
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		return path[i+1:]
 	}
-	rp.ServeHTTP(w, r)
-	return true
+	return path
 }

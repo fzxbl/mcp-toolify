@@ -50,7 +50,7 @@ func TestParse(t *testing.T) {
 
 func TestParseError(t *testing.T) {
 	exprs := []string{
-		"risk==high", "risk in low,high", "risk lt high", "",
+		"risk==high", "risk in low,high", "risk lt high",
 		"!=high", "!!risk", "a),b=c", "a b in (c)", "risk in (a,b", "risk in ()",
 		"risk!==high", "risk!=high=x", "risk!=!high", "risk in (a,!b)",
 	}
@@ -66,6 +66,31 @@ func TestParseError(t *testing.T) {
 				t.Errorf("Parse(%q) error path returned a match-all selector", expr)
 			}
 		})
+	}
+}
+
+// TestParseEmptyMatchesEverything：空 selector 按 k8s 语义匹配一切，且不是错误。
+// 同时钉住「零值不是 match-all」：解析失败返回的就是零值，那条路必须 fail-closed。
+func TestParseEmptyMatchesEverything(t *testing.T) {
+	for _, expr := range []string{"", "   "} {
+		s, err := Parse(expr)
+		if err != nil {
+			t.Fatalf("Parse(%q) = %v, want nil", expr, err)
+		}
+		if !s.MatchesEverything() {
+			t.Errorf("Parse(%q).MatchesEverything() = false", expr)
+		}
+		for _, labels := range []map[string]string{
+			nil, {}, {"risk": "high"}, {"capability": "read", "pkg": "demo"},
+		} {
+			if !s.Match(labels) {
+				t.Errorf("Parse(%q).Match(%v) = false, want true", expr, labels)
+			}
+		}
+	}
+	var zero Selector
+	if zero.Match(map[string]string{"risk": "high"}) || zero.MatchesEverything() {
+		t.Error("零值 Selector 必须不匹配任何 labels（解析失败走的就是这条路）")
 	}
 }
 

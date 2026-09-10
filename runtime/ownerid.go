@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"net"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -117,44 +116,52 @@ func OwnerOf(id string) (hostPort string, ok bool) {
 }
 
 var (
-	baseMu       sync.RWMutex
-	publicBase   string // 对外可直连的基础地址（不含末尾斜杠），形如 http://host:8011
-	selfHostPort string // 从 base 解析出的 host:port，用于判断某 id 是否归属本副本
+	baseMu     sync.RWMutex
+	selfAddr   string // 本副本可直连的 host:port：副本身份 + 副本间拨号目标
+	publicBase string // 交给外部的入口地址（不含末尾斜杠），可为域名/VIP
 )
 
-// SetPublicBaseURL 设置本副本对外可直连的基础地址；插件拼下载 URL、基座判 id 归属
-// 都以它为准。传空串表示没有对外地址（此时生成的 id 不带归属信息）。
+// SetSelfAddr 设置**本副本可直连的 host:port**。它是副本身份：owned id 内嵌它、
+// owner 路由据它判断「这个 id 是不是我的」、副本间反代据它拨号。因此它必须是本副本
+// 自己的地址，不能填负载均衡入口（那样所有副本的身份相同，id 里就没有区分副本的信息）。
+// 传空串表示没有身份（此时生成的 id 不带归属信息，行为与单机一致）。
+//
+// 只要 host:port，不要 URL：副本间转发固定走 http://，scheme 在这里没有意义。
+// 交给外部的链接用 SetPublicBaseURL，两者互不影响。
+func SetSelfAddr(hostPort string) {
+	baseMu.Lock()
+	defer baseMu.Unlock()
+	selfAddr = hostPort
+}
+
+// SelfHostPort 返回本副本可直连的 host:port；未设置时为空串。
+func SelfHostPort() string {
+	baseMu.RLock()
+	defer baseMu.RUnlock()
+	return selfAddr
+}
+
+// SetPublicBaseURL 设置**交给外部**的入口地址（如 https://mcp.example.com），
+// 只用于 PublicURL 拼给调用方的绝对链接。可以是域名/VIP：属主信息在 id 里，请求落到
+// 任意副本都会被 owner 路由反代到属主。末尾斜杠会被去掉；传空串表示回退 SelfAddr。
 func SetPublicBaseURL(base string) {
 	baseMu.Lock()
 	defer baseMu.Unlock()
 	publicBase = strings.TrimRight(base, "/")
-	selfHostPort = hostPortFromBase(publicBase)
 }
 
-// PublicBaseURL 返回本副本对外基础地址；未设置时为空串。
+// PublicBaseURL 返回对外入口地址：未单独设置时回退 "http://" + SelfAddr（同机/内网直连
+// 部署的默认形态）；两者都没有时返回空串。
 func PublicBaseURL() string {
 	baseMu.RLock()
 	defer baseMu.RUnlock()
-	return publicBase
-}
-
-// SelfHostPort 返回本副本对外可达的 host:port；未设置对外地址时为空串。
-func SelfHostPort() string {
-	baseMu.RLock()
-	defer baseMu.RUnlock()
-	return selfHostPort
-}
-
-// hostPortFromBase 从 "http(s)://host:port[/...]" 提取 "host:port"；无法解析返回空。
-func hostPortFromBase(base string) string {
-	if base == "" {
-		return ""
+	if publicBase != "" {
+		return publicBase
 	}
-	u, err := url.Parse(base)
-	if err != nil || u.Host == "" {
-		return ""
+	if selfAddr != "" {
+		return "http://" + selfAddr
 	}
-	return u.Host
+	return ""
 }
 
 var (

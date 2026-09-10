@@ -27,14 +27,17 @@ func newTestStore(t *testing.T, ttl, gcEvery time.Duration) *store {
 	return st
 }
 
-// withBaseURL 设置对外基础地址（进程级全局），用例结束后恢复。
-// 下载 URL 必须在**每次**落盘时现取：PublicBaseURL 由基座在 Start 里设置，
+// withBaseURL 把副本身份设成 base 对应的 host:port（进程级全局），用例结束后恢复。
+// 只设 SelfAddr：对外入口没单独配时由它推导（"http://"+SelfAddr），正是内网直连部署的
+// 默认形态，于是下载 URL 仍是 base + 路径。
+//
+// 下载 URL 必须在**每次**落盘时现取：这些地址由基座在 Start / Handlers 里设置，
 // 那时插件的 Install 早就跑完了。
 func withBaseURL(t *testing.T, base string) {
 	t.Helper()
-	old := runtime.PublicBaseURL()
-	runtime.SetPublicBaseURL(base)
-	t.Cleanup(func() { runtime.SetPublicBaseURL(old) })
+	old := runtime.SelfHostPort()
+	runtime.SetSelfAddr(strings.TrimPrefix(base, "http://"))
+	t.Cleanup(func() { runtime.SetSelfAddr(old) })
 }
 
 // captureLog 把标准库日志重定向到 buf，返回恢复函数。
@@ -66,9 +69,27 @@ func textCall(tool string) *runtime.Call {
 // ownedRequest 造一条带调用主体的下载请求。线上是基座的 HTTP 认证层注入 Subject，
 // 直接调 handler 的用例要自己注入，否则请求主体为空、属主判定必然拒绝。
 func ownedRequest(id string, own fileOwner) *http.Request {
-	req := httptest.NewRequest(http.MethodGet, downloadPath+id, nil)
+	return ownedRequestAt(downloadPath+id, own)
+}
+
+// ownedRequestAt 同上，但指定完整请求路径：宿主用 Registry.Mount 换了挂载点时，
+// 线上请求带的是**加过前缀的实际路径**，owner 路由也按实际路径匹配。
+func ownedRequestAt(path string, own fileOwner) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, path, nil)
 	return req.WithContext(runtime.WithSubject(req.Context(),
 		&runtime.Subject{Token: own.Token, ID: own.Subject}))
+}
+
+// downloadEntry 返回**生产形态**的下载入口：跨副本转发不在本插件里，而在基座交给宿主的
+// 那一层——Registry.Routes() 会把插件路由包进 runtime.WithPathOwnerRouting，配合
+// Install 里登记的提取器完成反代。凡是要验「归属别的副本时会不会转发」的用例都得走它，
+// 直接调 downloadHandler() 只能验本副本自己的应答。
+func downloadEntry(t *testing.T, st *store) http.Handler {
+	t.Helper()
+	runtime.ResetOwnerRoutedPathsForTest()
+	t.Cleanup(runtime.ResetOwnerRoutedPathsForTest)
+	runtime.RegisterOwnerRoutedRoute(downloadPath, st.downloadOwnerExtractor)
+	return runtime.WithPathOwnerRouting(st.downloadHandler())
 }
 
 // resultText 取结果里第一段文本，非文本或空结果返回空串。
@@ -227,8 +248,8 @@ func TestSpillSkipsListResults(t *testing.T) {
 }
 
 // TestSpillsErrorResults 覆盖 I4：错误态的大结果也必须落盘。
-// 曾经把 IsError 当例外放过，于是「5MiB 的错误文案原样进上下文」成了一条静默的
-// 超大路径，与「没有静默这一档」的承诺自相矛盾。改写后仍要保留 IsError。
+// 否则「5MiB 的错误文案原样进上下文」就是一条静默的超大路径，与「没有静默这一档」的
+// 承诺自相矛盾。落盘后仍要保留 IsError。
 func TestSpillsErrorResults(t *testing.T) {
 	withBaseURL(t, "http://127.0.0.1:8011")
 	st := newTestStore(t, time.Hour, time.Hour)
