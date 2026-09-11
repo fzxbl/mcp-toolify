@@ -275,7 +275,7 @@ func hostOf(t *testing.T, raw string) string {
 // 上一个用例留下的前缀会让它匹配不上。
 func pathRoutingFixture(t *testing.T) (http.Handler, func() bool) {
 	t.Helper()
-	setRoutePrefix("")
+	unlockRoutePrefixForTest() // 清掉上一个用例留下的前缀，本现场请求路径是裸的。
 	ResetOwnerRoutedPathsForTest()
 	t.Cleanup(ResetOwnerRoutedPathsForTest)
 	RegisterOwnerRoutedRoute("/confirm/", func(r *http.Request) string {

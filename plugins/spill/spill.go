@@ -288,9 +288,7 @@ func Install(r *runtime.Registry) error {
 		o.Quota.MaxFileBytes>>mibShift, o.Quota.MaxTotalBytes>>mibShift, o.Dir)
 	// 这行要回显下载端点的**实际路径**，所以打在 build 期钩子里：挂载前缀由宿主在
 	// Registry.Mount 里给出，那发生在 Install 之后；在 Install 里打会回显没加前缀的路径。
-	// 同时在这里固化路径：URLFor 之后只读这个值，不再依赖可变的 routePrefix。
 	r.OnBuild(func() error {
-		st.freezeDownloadPath()
 		log.Printf("[mcp] spill: 下载端点公开（不要求 Authorization），保护边界是不可猜测的 id；"+
 			"实际路径 %s", runtime.RoutePath(downloadPath))
 		return nil

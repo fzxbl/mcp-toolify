@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 )
@@ -14,33 +15,52 @@ import (
 // 这类差异只在多副本部署下才暴露——而唯一的来源是 Mount 的那一个参数，没有第二处可写歪。
 //
 // 前缀是进程级状态（与 SelfAddr / Peers 同一取舍）：插件与转发逻辑都要读它，
-// 一个进程一个基座。
+// 一个进程一个基座。Mount 成功后锁定：运行期再改会让 URL/转发与已挂载路由脱节，
+// 必须显式失败并带堆栈，不能静默清空。
 
 var (
-	routePrefixMu sync.RWMutex
-	routePrefix   string
+	routePrefixMu     sync.RWMutex
+	routePrefix       string
+	routePrefixLocked bool
 )
 
 // setRoutePrefix 校验并设置前缀；非法前缀返回 error（由 Mount 记成启动失败）。
-// 未导出：唯一来源是 Registry.Mount 的 prefix 参数。路由一旦挂上宿主的 router 就固定了，
-// 运行期改前缀只会让转发与 URL 指向不存在的路径。
+// 未导出：唯一来源是 Registry.Mount 的 prefix 参数。
+//
+// Mount 成功后（非空前缀）会锁定：再改一律失败并带堆栈——这是为了抓「谁把前缀清掉了」
+// 的真根因，而不是用缓存把症状盖住。空串仅允许在尚未锁定时设置（测试复位 / 挂在根上）。
 func setRoutePrefix(prefix string) error {
 	if err := validateRoutePrefix(prefix); err != nil {
-		routePrefixMu.Lock()
-		routePrefix = ""
-		routePrefixMu.Unlock()
 		return err
 	}
 	routePrefixMu.Lock()
+	defer routePrefixMu.Unlock()
+	if routePrefixLocked && prefix != routePrefix {
+		return fmt.Errorf("routePrefix 已由 Mount 锁定为 %q，拒绝改为 %q（调用栈：\n%s）",
+			routePrefix, prefix, debug.Stack())
+	}
 	routePrefix = prefix
-	routePrefixMu.Unlock()
+	if prefix != "" {
+		routePrefixLocked = true
+	}
 	return nil
+}
+
+// unlockRoutePrefixForTest 解除 Mount 锁定，**仅测试使用**。
+func unlockRoutePrefixForTest() {
+	routePrefixMu.Lock()
+	routePrefixLocked = false
+	routePrefix = ""
+	routePrefixMu.Unlock()
 }
 
 // SetRoutePrefixForTest 直接设置插件路由前缀，**仅测试使用**：包外插件的用例要复现
 // 「被宿主挂在某个前缀之下」的形态，而生产里唯一入口是 Registry.Mount（它还要求一份完整
-// 的 token 配置）。运行期调用它会让转发与 URL 指向不存在的路径。
-func SetRoutePrefixForTest(prefix string) error { return setRoutePrefix(prefix) }
+// 的 token 配置）。会先解锁再设置；运行期调用它仍会让转发与 URL 指向不存在的路径。
+func SetRoutePrefixForTest(prefix string) error {
+	unlockRoutePrefixForTest()
+	return setRoutePrefix(prefix)
+}
 
 // validateRoutePrefix 拒绝会静默变成 404 的写法，不做容错纠正：
 // 前缀写错的现象是外部请求 404，而 404 不指向前缀。宁可启动失败，让部署方立刻看到原因。

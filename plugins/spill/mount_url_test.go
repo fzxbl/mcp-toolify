@@ -14,12 +14,9 @@ import (
 	"github.com/fzxbl/mcp-toolify/runtime"
 )
 
-// TestDownloadURLSurvivesRoutePrefixWipe：宿主 Mount("/mcp") 后，即便进程级
-// routePrefix 被清空，模型拿到的下载链接仍必须是 /mcp/plugin/spill/<id>。
-//
-// 线上故障形态正是这个：启动日志已打印 /mcp/plugin/spill/，路由也挂对了，
-// 但 URLFor 现读可变前缀，读到空串就拼出裸 /spill/。
-func TestDownloadURLSurvivesRoutePrefixWipe(t *testing.T) {
+// TestDownloadURLUsesMountPrefix：Mount("/mcp") 后 URLFor 必须拼出
+// /mcp/plugin/spill/<id>。不做本地固化——直接走 PublicURL/RoutePath。
+func TestDownloadURLUsesMountPrefix(t *testing.T) {
 	dir := t.TempDir()
 	r := runtime.New(runtime.Config{
 		ConfigPath: writeConfig(t, baseTokens+fmt.Sprintf(`
@@ -37,9 +34,6 @@ dir = %q
 	if err := r.Mount("/mcp", func(string, http.Handler) {}); err != nil {
 		t.Fatalf("Mount: %v", err)
 	}
-	if err := runtime.SetRoutePrefixForTest(""); err != nil {
-		t.Fatalf("wipe prefix: %v", err)
-	}
 
 	id, err := Put("x", FormatText, []byte("hello"))
 	if err != nil {
@@ -48,8 +42,7 @@ dir = %q
 	got := URLFor(id)
 	wantPrefix := "http://10.189.95.145:8011/mcp/plugin/spill/"
 	if !strings.HasPrefix(got, wantPrefix) {
-		t.Fatalf("URLFor=%q，want 前缀 %q（Mount 后的下载路径必须固化，不能再依赖可变 routePrefix）",
-			got, wantPrefix)
+		t.Fatalf("URLFor=%q，want 前缀 %q", got, wantPrefix)
 	}
 }
 

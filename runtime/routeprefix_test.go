@@ -10,7 +10,8 @@ import (
 // resetRoutePrefix 让用例之间互不影响：前缀是进程级状态（与 PublicBaseURL 同源的取舍）。
 func resetRoutePrefix(t *testing.T) {
 	t.Helper()
-	t.Cleanup(func() { setRoutePrefix("") })
+	unlockRoutePrefixForTest()
+	t.Cleanup(unlockRoutePrefixForTest)
 }
 
 // TestRoutePrefixAppliedToRoutes：宿主声明了前缀时，Routes() 交出来的 pattern 必须**已经
@@ -92,6 +93,33 @@ func TestPublicBaseURLOnlyAffectsLinks(t *testing.T) {
 	SetPublicBaseURL("")
 	if got, want := PublicURL("/spill/"), "http://10.1.2.3:8011/mcp/plugin/spill/"; got != want {
 		t.Errorf("回退后的 PublicURL = %q, want %q", got, want)
+	}
+}
+
+// TestMountLocksRoutePrefix：Mount 成功后前缀锁定，再改必须显式失败并带堆栈。
+// 这是为了抓「谁把前缀清掉了」的真根因，而不是用缓存把症状盖住。
+func TestMountLocksRoutePrefix(t *testing.T) {
+	resetRoutePrefix(t)
+	r := New(Config{ConfigPath: writeTokenConfig(t, okTokenConfig)}, nil)
+	t.Cleanup(func() { r.RunStop(context.Background()) })
+	if err := r.Mount("/mcp", func(string, http.Handler) {}); err != nil {
+		t.Fatalf("Mount: %v", err)
+	}
+	if got := RoutePath("/spill/"); got != "/mcp/plugin/spill/" {
+		t.Fatalf("RoutePath after Mount = %q", got)
+	}
+	err := setRoutePrefix("")
+	if err == nil {
+		t.Fatal("Mount 锁定后清空前缀应失败")
+	}
+	if !strings.Contains(err.Error(), "已由 Mount 锁定") {
+		t.Errorf("报错应点名锁定: %v", err)
+	}
+	if !strings.Contains(err.Error(), "runtime/routeprefix.go") {
+		t.Errorf("报错应带调用栈: %v", err)
+	}
+	if got := RoutePath("/spill/"); got != "/mcp/plugin/spill/" {
+		t.Fatalf("失败后前缀被改掉了: %q", got)
 	}
 }
 

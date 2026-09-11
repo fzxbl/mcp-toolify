@@ -348,7 +348,6 @@ func TestRoutePrefixAppliesToURLAndForward(t *testing.T) {
 	t.Cleanup(func() { runtime.SetPeers(nil) })
 
 	st := newTestStore(t, time.Hour, time.Hour)
-	st.freezeDownloadPath()
 	if got, want := st.url("abc"), "http://127.0.0.1:18011"+prefix+downloadPath+"abc"; got != want {
 		t.Errorf("下载 URL = %q, want %q", got, want)
 	}

@@ -70,10 +70,9 @@ on_error        = "deny"                       # 落盘失败时：deny（默认
 MCP Subject，那层校验只会把所有直链都拦成 404。
 
 - 摘要里的绝对 URL 取基座的 `PublicBaseURL`（不配则由 `http://<SelfAddr>` 推导）+
-  Mount 时固化的路径前缀。路径前缀在 `OnBuild` 固化，避免运行时 `routePrefix`
-  被清空后拼出裸 `/spill/<id>`。`PublicBaseURL` 可以是域名/VIP：属主在 id 里，
-  请求落到任意副本都会被反代到属主。而 `SelfAddr` 必须是本副本可直连的地址
-  （它是副本身份）；只配它、且配成负载均衡入口会让下载随机落到非属主副本。
+  `RoutePath("/spill/")`（由 `Mount` 设定的前缀）。`PublicBaseURL` 可以是域名/VIP：
+  属主在 id 里，请求落到任意副本都会被反代到属主。而 `SelfAddr` 必须是本副本可直连
+  的地址（它是副本身份）；只配它、且配成负载均衡入口会让下载随机落到非属主副本。
   没配则摘要里只给本地路径，不给 URL。
 - 多副本：id 内嵌产出该文件的副本地址。请求打到别的副本时，由基座的 owner 路由
   （`RegisterOwnerRoutedRoute`）在 handler 之前反向代理到属主副本（带环路保护头），
@@ -121,7 +120,7 @@ MCP Subject，那层校验只会把所有直链都拦成 404。
 - `Open(id) (io.ReadSeekCloser, Info, err)`：宿主侧只读回取（例如把上一步输出喂给下一步），
   不必绕回 HTTP。
 - `URLFor(id) string`：对外下载地址；没有可用的对外地址时返回空串（不是错误），
-  拼进文案前请判空。路径前缀取 Mount 时固化的值。
+  拼进文案前请判空。
 - `SetDefaultDir(dir)`：见上文 `dir`。
 
 ## 必须知道的语义

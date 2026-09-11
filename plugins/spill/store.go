@@ -24,8 +24,8 @@ import (
 	"github.com/fzxbl/mcp-toolify/runtime"
 )
 
-// downloadPath 是下载端点的路由前缀。插件用 Registry.Route 注册它（自动套 token
-// 鉴权）：这个端点提供的是大结果原文，用 RoutePublic 就等于开了一个无认证后门。
+// downloadPath 是下载端点的路由 pattern。插件用 Registry.RoutePublic 注册它：
+// 浏览器直接打开链接，保护边界是不可猜测的 spill id。
 const downloadPath = "/spill/"
 
 const (
@@ -127,11 +127,6 @@ type store struct {
 	ttl     time.Duration
 	gcEvery time.Duration
 	q       quota
-
-	// frozenDownloadPath 是 Mount 之后固化的对外下载路径前缀（如 /mcp/plugin/spill/）。
-	// URL 必须读它，而不是每次现取可变的 routePrefix：后者在启动后若被清空，
-	// 路由仍挂在带前缀的路径上，模型却会拿到裸 /spill/<id>。
-	frozenDownloadPath atomic.Value // string
 
 	// root 是落盘目录的**句柄**（os.OpenRoot）。所有文件操作都经它做，不再拼绝对
 	// 路径去调 os.OpenFile —— 原因见 newStore 的注释（启动后目录被换掉的窗口）。
@@ -587,29 +582,32 @@ func (s *store) pathFor(id string) (string, bool) {
 	return filepath.Join(s.dir, id+fileExt), true
 }
 
-// freezeDownloadPath 在 Mount/build 期固化对外下载路径。
-// 必须在 setRoutePrefix 之后调用（Registry.Mount → Handlers → OnBuild）。
-func (s *store) freezeDownloadPath() {
-	s.frozenDownloadPath.Store(runtime.RoutePath(downloadPath))
-}
-
 // url 返回该 id 的对外下载地址；没有**可用**的对外地址时返回空串并告警一次。
 //
-// 对外入口每次现取 PublicBaseURL（基座在 Start / Handlers 里才设置它）；
-// 路径前缀则读 Mount/build 期固化的值——不能每次现取可变 routePrefix，否则会出现
-// 「路由挂在 /mcp/plugin/spill/、链接却拼成 /spill/」的脱节。
+// 每次现取对外地址：基座在 Start / Handlers 里才设置它，那时插件的 Install
+// 早就跑完了，Install 期缓存下来的一定是空串。
+//
+// 取的是 runtime.PublicBaseURL()（配了 Config.PublicBaseURL 就是它，可为域名/VIP；
+// 否则由本副本的 SelfAddr 推导）——下载 URL 是给 agent 与人用的，落到哪个副本都会被基座的
+// owner 路由反代到属主，所以它不必是直连地址。
 //
 // 「可用」要单独判一次：未显式配置时基座回退到实际监听地址，监听 ":8011" 得到的是
 // http://[::]:8011 —— 一个 agent 根本连不上的通配地址（审查实测）。这种 URL 放进模型
 // 上下文比不给更糟，所以宁可不给 URL、只给本地路径，并打一条启动级告警。
+//
+// 路径走 runtime.PublicURL：宿主可用 Registry.Mount 把本端点挂到任意前缀之下，
+// URL 必须与实际挂载点同源。不做本地固化——若拼出裸 /spill/，说明 routePrefix
+// 当时就是空的，应在日志里直接暴露，而不是用缓存把根因盖住。
 func (s *store) url(id string) string {
 	base := runtime.PublicBaseURL()
 	if usableBase(base) {
-		path, _ := s.frozenDownloadPath.Load().(string)
-		if path == "" {
-			path = runtime.RoutePath(downloadPath)
-		}
-		return base + path + id
+		path := runtime.RoutePath(downloadPath)
+		url := base + path + id
+		// 诊断：线上曾出现「启动日志是 /mcp/plugin/spill/，返回链接却是 /spill/」。
+		// 生产代码没有清空前缀的路径；每次拼 URL 都打出当前前缀，便于钉死根因。
+		log.Printf("[mcp] spill: URLFor path=%q prefix=%q url=%q",
+			path, strings.TrimSuffix(path, downloadPath), url)
+		return url
 	}
 	warnBaseOnce.Do(func() {
 		log.Printf("[mcp] spill warning: 对外地址 %q 不可用于下载（未配置 PublicBaseURL /"+
