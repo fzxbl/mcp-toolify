@@ -146,9 +146,9 @@ func TestSharedContentDownloadable(t *testing.T) {
 	}
 }
 
-// TestOwnedContentRefusesOtherSubject：PutFor 绑定了主体的内容，别人拿到 id
-// 也取不到——这正是下载端点上 token 认证回答不了的那个问题。
-func TestOwnedContentRefusesOtherSubject(t *testing.T) {
+// TestOwnedContentStillPublicDownload：PutFor 仍可记录主体（供审计/排查），
+// 但公开下载端点不再按 Subject 拦截——拿到 id 就能下。
+func TestOwnedContentStillPublicDownload(t *testing.T) {
 	st := hostStore(t)
 	id, err := PutFor(&runtime.Subject{Token: "ops-agent", ID: "zhangsan"},
 		"secret.txt", FormatText, []byte("only-mine"))
@@ -167,11 +167,11 @@ func TestOwnedContentRefusesOtherSubject(t *testing.T) {
 	if code := get(&runtime.Subject{Token: "ops-agent", ID: "zhangsan"}); code != http.StatusOK {
 		t.Errorf("属主本人下载状态码 = %d，want 200", code)
 	}
-	if code := get(&runtime.Subject{Token: "ops-agent", ID: "lisi"}); code != http.StatusNotFound {
-		t.Errorf("同 token 不同人下载状态码 = %d，want 404", code)
+	if code := get(&runtime.Subject{Token: "ops-agent", ID: "lisi"}); code != http.StatusOK {
+		t.Errorf("同 token 不同人下载状态码 = %d，want 200（公开下载）", code)
 	}
-	if code := get(nil); code != http.StatusNotFound {
-		t.Errorf("无主体下载状态码 = %d，want 404", code)
+	if code := get(nil); code != http.StatusOK {
+		t.Errorf("无主体下载状态码 = %d，want 200（公开下载）", code)
 	}
 }
 

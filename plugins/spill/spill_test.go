@@ -27,17 +27,27 @@ func newTestStore(t *testing.T, ttl, gcEvery time.Duration) *store {
 	return st
 }
 
-// withBaseURL 把副本身份设成 base 对应的 host:port（进程级全局），用例结束后恢复。
-// 只设 SelfAddr：对外入口没单独配时由它推导（"http://"+SelfAddr），正是内网直连部署的
-// 默认形态，于是下载 URL 仍是 base + 路径。
+// withBaseURL 把对外入口与副本身份设成 base（进程级全局），用例结束后恢复。
 //
-// 下载 URL 必须在**每次**落盘时现取：这些地址由基座在 Start / Handlers 里设置，
-// 那时插件的 Install 早就跑完了。
+// 两个地址都要设：PublicBaseURL 决定 URLFor 的 host；SelfAddr 决定 owned id 归属。
+// 只设 SelfAddr 时，若前序用例留下了 PublicBaseURL，下载 URL 会指向错误的 host。
 func withBaseURL(t *testing.T, base string) {
 	t.Helper()
-	old := runtime.SelfHostPort()
+	oldAddr, oldBase := runtime.SelfHostPort(), runtime.PublicBaseURL()
+	oldPrefix := runtime.RoutePath(downloadPath)
+	_ = runtime.SetRoutePrefixForTest("")
+	runtime.SetPublicBaseURL(base)
 	runtime.SetSelfAddr(strings.TrimPrefix(base, "http://"))
-	t.Cleanup(func() { runtime.SetSelfAddr(old) })
+	t.Cleanup(func() {
+		runtime.SetSelfAddr(oldAddr)
+		runtime.SetPublicBaseURL(oldBase)
+		// 尽量还原前缀：空串表示挂在根上。
+		if strings.HasPrefix(oldPrefix, "/mcp/plugin") {
+			_ = runtime.SetRoutePrefixForTest("/mcp/plugin")
+		} else {
+			_ = runtime.SetRoutePrefixForTest("")
+		}
+	})
 }
 
 // captureLog 把标准库日志重定向到 buf，返回恢复函数。
@@ -133,6 +143,9 @@ func TestSpillRewritesLargeResult(t *testing.T) {
 	}
 	if !strings.Contains(text, "http://127.0.0.1:8011/spill/") {
 		t.Errorf("摘要里没有下载 URL: %s", text)
+	}
+	if strings.Contains(text, "Authorization") {
+		t.Errorf("公开下载不应再要求 Authorization: %s", text)
 	}
 	if len(res.Tool.Content) != 1 {
 		t.Errorf("改写后的结果应只有一段摘要文本，实际 %d 段", len(res.Tool.Content))

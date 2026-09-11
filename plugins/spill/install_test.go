@@ -120,9 +120,9 @@ func TestInstallLogsPolicy(t *testing.T) {
 	}
 }
 
-// TestSpillEndpointRequiresToken：/spill/<id> 提供的是大结果原文，必须走
-// Registry.Route（自动套 token 鉴权）注册。用 RoutePublic 的版本被实测过可以裸取内容。
-func TestSpillEndpointRequiresToken(t *testing.T) {
+// TestSpillEndpointIsPublicViaHandlers：下载端点必须走 RoutePublic——浏览器直接打开
+// 链接，不要求 Authorization。保护边界是不可猜测的 spill id。
+func TestSpillEndpointIsPublicViaHandlers(t *testing.T) {
 	dir := t.TempDir()
 	r := installed(t, baseTokens+`
 [spill]
@@ -136,7 +136,6 @@ dir = "`+strings.ReplaceAll(dir, `\`, `\\`)+`"
 	if !ok {
 		t.Fatalf("插件没有注册 %s 路由: %v", downloadPath, routes)
 	}
-	// 先落一份真文件，确保 401 不是因为「文件不存在」。
 	st, err := newStore(dir, time.Hour, time.Hour, quota{})
 	if err != nil {
 		t.Fatalf("newStore: %v", err)
@@ -156,23 +155,8 @@ dir = "`+strings.ReplaceAll(dir, `\`, `\\`)+`"
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("无 token 访问 => %d，want 401", resp.StatusCode)
-	}
-	if strings.Contains(string(body), "SPILLED-PAYLOAD") {
-		t.Fatal("无鉴权就取到了大结果原文")
-	}
-
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+downloadPath+id, nil)
-	req.Header.Set("Authorization", "Bearer t-ops")
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	body, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "SPILLED-PAYLOAD") {
-		t.Errorf("带 token 访问 => %d body=%s，want 200 + 内容", resp.StatusCode, body)
+		t.Errorf("无 token 访问 => %d body=%s，want 200 + 内容", resp.StatusCode, body)
 	}
 }
 

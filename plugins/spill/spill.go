@@ -22,20 +22,19 @@
 //     不删文件（正在下载的结果不该因一次重启消失），残留文件由下次启动的首轮扫描清掉。
 //     回收只动「本进程创建的 / id 属主是本副本的 / 无属主信息且已超 ttl+24h 的」文件，
 //     多个部署共享同一 dir 时不会互删；仍建议每个部署用独立 dir。
-//  5. 下载端点 /spill/<id> 由基座套 token 鉴权（Registry.Route），并在此之上做**属主
-//     校验**：落盘时记下 Subject.Token（用途名）与有身份时的 Subject.ID，非属主一律
-//     404（不是 403，也不回显属主地址——避免存在性与拓扑泄漏）。
+//  5. 下载端点 /spill/<id> 用 Registry.RoutePublic 注册（浏览器直接打开，不要求
+//     Bearer token）。保护边界是不可猜测的 spill id（含随机段；有归属时还内嵌
+//     副本地址），外加目录权限与 TTL。不再做按调用主体的属主校验——公开下载
+//     场景下浏览器没有 MCP Subject，属主校验只会把所有直链都拦成 404。
 //  6. 多副本部署：id 内嵌产出该文件的副本地址，请求打到别的副本时，若该地址在 peer
-//     白名单内则反向代理到属主副本（带环路保护头，Authorization 原样透传），否则 404。
+//     白名单内则反向代理到属主副本（带环路保护头），否则 404。
 //     摘要里的绝对 URL 依赖 PublicBaseURL，它必须是**本副本可直连的地址**，配成负载
 //     均衡入口会让下载随机落到非属主副本。
 //     **已知风险（复审 M-3，与基座 owner_routing 的既有约定一致，本插件不单独改）**：
-//     副本间转发走明文 http://，且把调用方的 Bearer token 原样带给属主副本 ——
-//     内网抓包即得该 token。副本跨机部署时请给 peer 之间加 TLS，或改用副本间的
-//     内部凭据替代透传调用方 token。
+//     副本间转发走明文 http://；公开下载不再透传调用方 Bearer token。
 //  7. 落盘内容是工具结果原文，会以文件形式留在磁盘上 ttl 那么久。工具返回值里若有
 //     敏感数据，落盘目录的权限（启动时收紧为 0700，目录不属于本进程或收紧失败则拒绝
-//     启动）、属主校验与 ttl 就是它的全部保护。目录在校验通过后被以句柄形式持有
+//     启动）、不可猜测的 id 与 ttl 就是它的全部保护。目录在校验通过后被以句柄形式持有
 //     （os.OpenRoot），启动之后把路径换成软链既改不了写入位置、也读不出别处的文件。
 package spill
 
@@ -282,21 +281,22 @@ func Install(r *runtime.Registry) error {
 	runtime.RegisterOwnerRouted(exploreToolName, "id")
 	// 启动日志声明生效策略：on_error 决定「落盘失败时这次调用还算不算成功」，
 	// 阈值/TTL/上限决定「什么会被落盘、能取回多久、最多占多少盘」，
-	// 最后一行声明**下载鉴权粒度** —— 它取决于基座是否给出了真实身份，
-	// 部署方必须知道当前生效的是哪一档。
+	// 最后一行声明下载端点的**实际路径**与公开下载语义。
 	log.Printf("[mcp] spill: on_error=%s threshold_bytes=%d(序列化后字节) ttl=%s gc_interval=%s "+
 		"preview_bytes=%d max_file_mib=%d max_total_mib=%d dir=%s",
 		o.OnError, o.Threshold, o.TTL, o.GCInterval, o.PreviewBytes,
 		o.Quota.MaxFileBytes>>mibShift, o.Quota.MaxTotalBytes>>mibShift, o.Dir)
 	// 这行要回显下载端点的**实际路径**，所以打在 build 期钩子里：挂载前缀由宿主在
 	// Registry.Mount 里给出，那发生在 Install 之后；在 Install 里打会回显没加前缀的路径。
+	// 同时在这里固化路径：URLFor 之后只读这个值，不再依赖可变的 routePrefix。
 	r.OnBuild(func() error {
-		log.Printf("[mcp] spill: 下载鉴权粒度=token 用途名 + 属主有身份时再比对 Subject.ID；"+
-			"基座默认不信任身份头（Subject.ID 为空），此时同一 token 用途名的调用方之间"+
-			"可以互相下载 %s 结果", runtime.RoutePath(downloadPath))
+		st.freezeDownloadPath()
+		log.Printf("[mcp] spill: 下载端点公开（不要求 Authorization），保护边界是不可猜测的 id；"+
+			"实际路径 %s", runtime.RoutePath(downloadPath))
 		return nil
 	})
-	r.Route(downloadPath, st.downloadHandler())
+	// 公开下载：浏览器直接打开链接，不能要求 MCP Bearer。保护靠不可猜测的 id。
+	r.RoutePublic(downloadPath, st.downloadHandler())
 	// 下载端点也走基座的同一套 owner 路由（按路径里的 id）：内容只在产出它的副本本地，
 	// 下载 URL 经过 LB 后落到哪个副本是随机的，没有这条声明时 (N-1)/N 的请求都会 404。
 	// 与上面 spill_explore 的按参数路由是同一个机制的两种提取形态，转发由基座统一实现。
@@ -368,7 +368,7 @@ func rewrite(orig *mcp.CallToolResult, st *store, o options,
 		size, o.Threshold, id, o.TTL)
 	if url := st.url(id); url != "" {
 		fmt.Fprintf(&b, "完整内容（%d 字节 JSON）下载：%s\n"+
-			"（需带与本次调用相同的 Authorization；该地址指向产出它的副本）\n", written, url)
+			"（公开链接，浏览器可直接打开；该地址指向产出它的副本）\n", written, url)
 	} else {
 		fmt.Fprintf(&b, "完整内容已写入产出副本本地的 %s（%d 字节）；"+
 			"本副本未配置对外地址（PublicBaseURL），故没有下载 URL。\n",

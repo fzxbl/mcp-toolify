@@ -64,7 +64,7 @@ func TestStorePutRoundTrip(t *testing.T) {
 	}
 }
 
-// TestDownloadHandlerServesFile：带鉴权的 /spill/<id> 必须能拿到落盘原文。
+// TestDownloadHandlerServesFile：公开的 /spill/<id> 必须能拿到落盘原文。
 func TestDownloadHandlerServesFile(t *testing.T) {
 	st := newTestStore(t, time.Hour, time.Hour)
 	text := strings.Repeat("z", 3000)
@@ -197,15 +197,15 @@ func TestDownloadHandlerTreatsExpiredAsGone(t *testing.T) {
 }
 
 // TestDownloadForwardsToOwnerReplica 覆盖 I2：spill 文件只在产出它的副本本地，
-// 而下载请求经 LB 会随机落到任意副本。id 指向已知兄弟副本时必须把这次 GET 反代过去
-// （带上 Authorization 让属主再认证一次），不能回「文件不存在」。
+// 而下载请求经 LB 会随机落到任意副本。id 指向已知兄弟副本时必须把这次 GET 反代过去，
+// 不能回「文件不存在」。
 //
 // 转发由基座的路径 owner 路由完成（见 downloadEntry），本用例验的是「插件把提取器
 // 登记对了、于是这条链路真的通」；防环、白名单、单跳等判定归基座的用例。
+// 公开下载不再要求属主副本再做 token 认证，Authorization 透传与否不影响正确性。
 func TestDownloadForwardsToOwnerReplica(t *testing.T) {
-	var gotAuth, gotPath string
+	var gotPath string
 	owner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
 		gotPath = r.URL.Path
 		io.WriteString(w, "PAYLOAD-FROM-OWNER")
 	}))
@@ -224,7 +224,6 @@ func TestDownloadForwardsToOwnerReplica(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := ownedRequest(peerID, testOwner)
-	req.Header.Set("Authorization", "Bearer t-ops")
 	downloadEntry(t, st).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -233,9 +232,6 @@ func TestDownloadForwardsToOwnerReplica(t *testing.T) {
 	body, _ := io.ReadAll(rec.Body)
 	if !strings.Contains(string(body), "PAYLOAD-FROM-OWNER") {
 		t.Errorf("响应不是属主副本的内容: %q", body)
-	}
-	if gotAuth != "Bearer t-ops" {
-		t.Errorf("转发丢了 Authorization（属主要再认证一次）: %q", gotAuth)
 	}
 	if gotPath != downloadPath+peerID {
 		t.Errorf("转发路径 = %q，want %q", gotPath, downloadPath+peerID)
@@ -335,13 +331,6 @@ func TestCloseIsIdempotent(t *testing.T) {
 // 两条断言缺一个，都能让这类 bug 溜过去。
 func TestRoutePrefixAppliesToURLAndForward(t *testing.T) {
 	const prefix = "/mcp/plugin"
-	// 前缀是进程级状态；生产里唯一入口是 Registry.Mount（它还要一份完整 token 配置），
-	// 用例用 ForTest 版直接设置，用完复位。
-	if err := runtime.SetRoutePrefixForTest(prefix); err != nil {
-		t.Fatalf("SetRoutePrefixForTest: %v", err)
-	}
-	t.Cleanup(func() { runtime.SetRoutePrefixForTest("") })
-
 	var gotPath string
 	owner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
@@ -351,10 +340,15 @@ func TestRoutePrefixAppliesToURLAndForward(t *testing.T) {
 	ownerHost := strings.TrimPrefix(owner.URL, "http://")
 
 	withBaseURL(t, "http://127.0.0.1:18011")
+	if err := runtime.SetRoutePrefixForTest(prefix); err != nil {
+		t.Fatalf("SetRoutePrefixForTest: %v", err)
+	}
+	t.Cleanup(func() { runtime.SetRoutePrefixForTest("") })
 	runtime.SetPeers([]string{ownerHost})
 	t.Cleanup(func() { runtime.SetPeers(nil) })
 
 	st := newTestStore(t, time.Hour, time.Hour)
+	st.freezeDownloadPath()
 	if got, want := st.url("abc"), "http://127.0.0.1:18011"+prefix+downloadPath+"abc"; got != want {
 		t.Errorf("下载 URL = %q, want %q", got, want)
 	}
@@ -363,8 +357,6 @@ func TestRoutePrefixAppliesToURLAndForward(t *testing.T) {
 	peerID := runtime.NewOwnedID()
 	runtime.SetSelfAddr("127.0.0.1:18011")
 	rec := httptest.NewRecorder()
-	// 请求走**加过前缀的实际路径**（线上宿主就是照 Routes() 交出的路径挂的）：
-	// owner 路由按实际路径匹配，转发也保留原路径。
 	downloadEntry(t, st).ServeHTTP(rec,
 		ownedRequestAt(prefix+downloadPath+peerID, testOwner))
 	if rec.Code != http.StatusOK {

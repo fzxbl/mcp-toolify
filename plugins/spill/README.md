@@ -43,11 +43,11 @@ on_error        = "deny"
 
 ## Download endpoint and security
 
-The plugin registers `GET /spill/<id>` through the authenticated runtime route (`Registry.Route`, never a public route). It records `Subject.Token` (token purpose/name) and, when present, `Subject.ID`; a non-owner receives 404 rather than 403, without owner or topology disclosure. The default runtime does not trust client identity headers, so when `Subject.ID` is empty, callers sharing the same token purpose can access one another's results.
+The plugin registers `GET /spill/<id>` (typically `/mcp/plugin/spill/<id>` after host mount) through `Registry.RoutePublic` — **no Authorization required**. A browser can open the link directly. Protection is the unguessable spill ID (random segment; owned IDs also embed the producing replica), directory mode `0700`, and TTL. Download no longer checks call-subject ownership: browsers have no MCP Subject, and that check would 404 every direct link.
 
-The summary's absolute URL comes from `PublicBaseURL` (derived from `SelfAddr` when unset), and a domain or VIP is fine there: the owner lives in the ID, so a download landing on any replica is proxied to the owner. `SelfAddr` itself must stay this replica's directly dialable `host:port` because it is the replica identity. With multiple replicas, the owned ID embeds the producing replica address; requests received by another replica are proxied by the base's owner routing (`RegisterOwnerRoutedRoute`) before reaching this handler — only when that address is in the peer allowlist, with loop protection, and never when the file is already present locally. The plugin carries no forwarding implementation of its own. Authorization is forwarded unchanged. Inter-replica forwarding currently uses cleartext `http://` and forwards the caller's bearer token; use TLS between peers or replace it with an internal credential for cross-host deployments.
+The summary's absolute URL comes from `PublicBaseURL` (derived from `SelfAddr` when unset) plus the download path frozen at Mount/`OnBuild`. Freezing the path prevents a later empty `routePrefix` from producing a bare `/spill/<id>` while routes remain under `/mcp/plugin/spill/`. A domain or VIP is fine for `PublicBaseURL`: the owner lives in the ID, so a download landing on any replica is proxied to the owner. `SelfAddr` itself must stay this replica's directly dialable `host:port` because it is the replica identity. With multiple replicas, the owned ID embeds the producing replica address; requests received by another replica are proxied by the base's owner routing (`RegisterOwnerRoutedRoute`) before reaching this handler — only when that address is in the peer allowlist, with loop protection, and never when the file is already present locally. The plugin carries no forwarding implementation of its own. Inter-replica forwarding currently uses cleartext `http://`; use TLS between peers for cross-host deployments.
 
-Files contain the original tool result for the full TTL. Directory mode `0700`, file mode `0600`, owner checks, and TTL are the protection boundary. Use a short TTL for sensitive data and separate directories per deployment where possible.
+Files contain the original tool result for the full TTL. Directory mode `0700`, file mode `0600`, unguessable IDs, and TTL are the protection boundary. Use a short TTL for sensitive data and separate directories per deployment where possible.
 
 ## `spill_explore`
 
@@ -80,9 +80,9 @@ spill.SetDefaultDir(dir) // before Install, only when [spill].dir is absent
 ```
 
 - `Put` writes a complete payload. `Create` allocates an ID immediately and supports incremental writes; content is readable while `status=running`. `Writer` is not concurrency-safe.
-- `Put`/`Create` are shared because they have no MCP call subject: any authenticated caller can download them. For subject isolation, use the subject-aware `PutFor`/`CreateFor` APIs with a `runtime.Subject` (available in the current package API).
+- `Put`/`Create` mark content as shared in the file header. `PutFor`/`CreateFor` still record a subject for audit, but the public download endpoint no longer enforces subject ownership — possession of the ID is enough.
 - `CreatePath` returns an ID and path for third-party writers that only accept filenames. The plugin cannot enforce the write process or per-file limit; sibling files such as `.wf` share the ID and TTL, but only the returned path is downloadable/explorable.
-- `Open` returns an `io.ReadSeekCloser` over the payload plus `Info`; `URLFor` returns an empty string, not an error, when no usable outward address exists.
+- `Open` returns an `io.ReadSeekCloser` over the payload plus `Info`; `URLFor` returns an empty string, not an error, when no usable outward address exists. The path prefix is the value frozen at Mount/`OnBuild`.
 - `Info` includes `ID`, `Name`, `Format`, payload `Size`, `ModTime`, and `Shared`. `ModTime` drives TTL.
 - Before `Install`, or after `OnStop`, storage APIs return `ErrNotInstalled`; the package never lazily creates a store in the system temporary directory.
 
@@ -94,6 +94,6 @@ Each format uses the following media type: JSON `application/json; charset=utf-8
 
 ## Metadata and startup observability
 
-When middleware spills a result, it writes the ID to `Call.Meta` under `spill.MetaID` (`"spill.id"`); it is absent when no spill occurs. The summary contains the estimated serialized size, threshold, ID, retention, a download URL when available (and the required same Authorization), otherwise the local replica path, plus a bounded non-base64 preview.
+When middleware spills a result, it writes the ID to `Call.Meta` under `spill.MetaID` (`"spill.id"`); it is absent when no spill occurs. The summary contains the estimated serialized size, threshold, ID, retention, a download URL when available (public link, openable in a browser), otherwise the local replica path, plus a bounded non-base64 preview.
 
-Startup logs use `[mcp] spill:` and report effective `on_error`, serialized-byte threshold, TTL, GC interval, preview size, file/total MiB quotas, and directory. A separate startup line reports the download authorization granularity: token purpose plus `Subject.ID` when a trusted identity exists, and the `/spill/` route. Storage failures use `[mcp] spill error:` and include log ID, tool, size, and strategy; the caller-facing `deny` error does not reveal directory details.
+Startup logs use `[mcp] spill:` and report effective `on_error`, serialized-byte threshold, TTL, GC interval, preview size, file/total MiB quotas, and directory. A separate startup line reports that the download endpoint is public (no Authorization) and prints the actual path (e.g. `/mcp/plugin/spill/`). Storage failures use `[mcp] spill error:` and include log ID, tool, size, and strategy; the caller-facing `deny` error does not reveal directory details.

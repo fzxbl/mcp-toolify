@@ -88,8 +88,8 @@ type Info struct {
 // SQL 查询结果导成 CSV、把批量接口的返回摊平成 jsonl 交给 agent 逐行探索。
 //
 // 属主：写入方不是一次 MCP 调用，没有可比对的调用主体，因此这类内容是**共享**的
-// ——任何通过 `/spill/<id>` token 认证的调用方都能下载（见 Info.Shared）。
-// 只该给某一个人看的内容不要用它写；需要按人隔离时用 PutFor 传入 Subject。
+// （见 Info.Shared）。下载端点本身已公开（靠不可猜测的 id），Put/Create 与
+// PutFor/CreateFor 在下载侧不再有差别；PutFor 仍可把主体写进文件头供审计/排查。
 func Put(name string, f Format, data []byte) (id string, err error) {
 	w, err := Create(name, f)
 	if err != nil {

@@ -62,6 +62,11 @@ func newFixture(t *testing.T, tokens string, extra string, payload string) *fixt
 	}
 	t.Cleanup(func() { r.RunStop(context.Background()) })
 
+	// Handlers() 会按当前 routePrefix 给 pattern 加前缀。测试里要挂裸 /spill/，
+	// 必须先清掉前序 Mount("/mcp") 用例留下的 /mcp/plugin。
+	if err := runtime.SetRoutePrefixForTest(""); err != nil {
+		t.Fatalf("reset route prefix: %v", err)
+	}
 	h, routes, err := r.Handlers()
 	if err != nil {
 		t.Fatalf("Handlers: %v", err)
@@ -123,49 +128,38 @@ func (f *fixture) get(t *testing.T, token, id string, headers map[string]string)
 	return resp.StatusCode, string(raw)
 }
 
-// TestDownloadDeniesOtherToken 覆盖 C1：落盘结果只属于产出它的调用主体。
-// 另一个 token 即使权限相同也不能下载——token 的 allow/deny selector 是本项目
-// 唯一的按工具分级手段，下载端点若不看主体就把这层分级整个绕过了。
-func TestDownloadDeniesOtherToken(t *testing.T) {
+// TestDownloadAllowsAnyoneWithID：公开下载只靠不可猜测的 id——无 token、
+// 另一个 token、另一个身份，只要拿到 id 都能下。
+func TestDownloadAllowsAnyoneWithID(t *testing.T) {
 	payload := strings.Repeat("A-PRIVATE-PAYLOAD ", 2000)
 	f := newFixture(t, twoTokens, "", payload)
 	id := f.callBig(t, "t-a", nil)
 
-	if code, body := f.get(t, "t-a", id, nil); code != http.StatusOK ||
+	if code, body := f.get(t, "", id, nil); code != http.StatusOK ||
 		!strings.Contains(body, payload) {
-		t.Fatalf("属主下载 => %d，want 200 + 内容（body 前缀 %.80s）", code, body)
+		t.Fatalf("无 token 下载 => %d，want 200 + 内容（body 前缀 %.80s）", code, body)
 	}
-	code, body := f.get(t, "t-b", id, nil)
-	if code != http.StatusNotFound {
-		t.Errorf("非属主下载 => %d，want 404（不能是 403：不泄漏存在性）", code)
-	}
-	if strings.Contains(body, "A-PRIVATE-PAYLOAD") {
-		t.Fatal("非属主 token 拿到了别人 spill 的结果原文")
+	if code, body := f.get(t, "t-b", id, nil); code != http.StatusOK ||
+		!strings.Contains(body, payload) {
+		t.Fatalf("其他 token 下载 => %d，want 200 + 内容（body 前缀 %.80s）", code, body)
 	}
 }
 
-// TestDownloadDeniesOtherIdentity 覆盖 C1 的身份维度：开了
-// trust_identity_header 时，同一个 token 下的不同人也不能互相下载。
-func TestDownloadDeniesOtherIdentity(t *testing.T) {
+// TestDownloadIgnoresIdentityHeaders：公开下载不再按 Subject 做属主校验。
+func TestDownloadIgnoresIdentityHeaders(t *testing.T) {
 	payload := strings.Repeat("ZHANGSAN-ONLY ", 2000)
 	f := newFixture(t, "trust_identity_header = true\n"+twoTokens, "", payload)
 	zhangsan := map[string]string{"X-MCP-User": "zhangsan"}
 	lisi := map[string]string{"X-MCP-User": "lisi"}
 	id := f.callBig(t, "t-a", zhangsan)
 
-	if code, _ := f.get(t, "t-a", id, zhangsan); code != http.StatusOK {
-		t.Fatalf("属主本人下载 => %d，want 200", code)
+	if code, body := f.get(t, "t-a", id, lisi); code != http.StatusOK ||
+		!strings.Contains(body, payload) {
+		t.Fatalf("其他身份下载 => %d，want 200 + 内容", code)
 	}
-	code, body := f.get(t, "t-a", id, lisi)
-	if code != http.StatusNotFound {
-		t.Errorf("同 token 的另一个人下载 => %d，want 404", code)
-	}
-	if strings.Contains(body, "ZHANGSAN-ONLY") {
-		t.Fatal("同 token 的另一个人拿到了结果原文")
-	}
-	// 无身份头（匿名）也不能顶替一个有身份的属主。
-	if code, _ := f.get(t, "t-a", id, nil); code != http.StatusNotFound {
-		t.Errorf("匿名下载有身份属主的文件 => %d，want 404", code)
+	if code, body := f.get(t, "", id, nil); code != http.StatusOK ||
+		!strings.Contains(body, payload) {
+		t.Fatalf("匿名下载 => %d，want 200 + 内容", code)
 	}
 }
 

@@ -59,11 +59,9 @@ var idPattern = regexp.MustCompile(`^(?:[0-9a-f]{32}|[a-z2-7]{2,256}\.[0-9a-f]{1
 
 // fileOwner 是一份 spill 文件的属主，随文件一起落盘（文件的第一个字段）。
 //
-// 为什么必须有：`/spill/<id>` 上的 token 认证只回答「你是不是一个合法调用方」，
-// 回答不了「这份结果是不是你的」。没有属主判定时，任何持合法 token 的人只要拿到
-// （或猜到）id 就能取到别人的完整结果，连 token 的 allow/deny selector 分级
-// （本项目唯一的按工具分级手段）都一并绕过：只被授权 capability=read 的 token
-// 能下载 capability=write,risk=high 工具落盘的输出。
+// 为什么曾经需要：下载端点若套 token 认证，token 只回答「你是不是合法调用方」，
+// 回答不了「这份结果是不是你的」。公开下载后这层已不再是下载侧门槛——保护边界是
+// 不可猜测的 id；fileOwner 仍写入文件头，供审计与排查。
 type fileOwner struct {
 	// Token 是 token 的**用途名**（[[tokens]].name），不是 token 值。
 	Token string `json:"token"`
@@ -129,6 +127,11 @@ type store struct {
 	ttl     time.Duration
 	gcEvery time.Duration
 	q       quota
+
+	// frozenDownloadPath 是 Mount 之后固化的对外下载路径前缀（如 /mcp/plugin/spill/）。
+	// URL 必须读它，而不是每次现取可变的 routePrefix：后者在启动后若被清空，
+	// 路由仍挂在带前缀的路径上，模型却会拿到裸 /spill/<id>。
+	frozenDownloadPath atomic.Value // string
 
 	// root 是落盘目录的**句柄**（os.OpenRoot）。所有文件操作都经它做，不再拼绝对
 	// 路径去调 os.OpenFile —— 原因见 newStore 的注释（启动后目录被换掉的窗口）。
@@ -584,25 +587,29 @@ func (s *store) pathFor(id string) (string, bool) {
 	return filepath.Join(s.dir, id+fileExt), true
 }
 
+// freezeDownloadPath 在 Mount/build 期固化对外下载路径。
+// 必须在 setRoutePrefix 之后调用（Registry.Mount → Handlers → OnBuild）。
+func (s *store) freezeDownloadPath() {
+	s.frozenDownloadPath.Store(runtime.RoutePath(downloadPath))
+}
+
 // url 返回该 id 的对外下载地址；没有**可用**的对外地址时返回空串并告警一次。
 //
-// 每次现取对外地址：基座在 Start / Handlers 里才设置它，那时插件的 Install
-// 早就跑完了，Install 期缓存下来的一定是空串。
-//
-// 取的是 runtime.PublicBaseURL()（配了 Config.PublicBaseURL 就是它，可为域名/VIP；
-// 否则由本副本的 SelfAddr 推导）——下载 URL 是给 agent 与人用的，落到哪个副本都会被基座的
-// owner 路由反代到属主，所以它不必是直连地址。
+// 对外入口每次现取 PublicBaseURL（基座在 Start / Handlers 里才设置它）；
+// 路径前缀则读 Mount/build 期固化的值——不能每次现取可变 routePrefix，否则会出现
+// 「路由挂在 /mcp/plugin/spill/、链接却拼成 /spill/」的脱节。
 //
 // 「可用」要单独判一次：未显式配置时基座回退到实际监听地址，监听 ":8011" 得到的是
 // http://[::]:8011 —— 一个 agent 根本连不上的通配地址（审查实测）。这种 URL 放进模型
 // 上下文比不给更糟，所以宁可不给 URL、只给本地路径，并打一条启动级告警。
-//
-// 路径走 runtime.PublicURL：宿主可用 Registry.Mount 把本端点挂到任意前缀之下，
-// URL 必须与实际挂载点同源。
 func (s *store) url(id string) string {
 	base := runtime.PublicBaseURL()
 	if usableBase(base) {
-		return runtime.PublicURL(downloadPath) + id
+		path, _ := s.frozenDownloadPath.Load().(string)
+		if path == "" {
+			path = runtime.RoutePath(downloadPath)
+		}
+		return base + path + id
 	}
 	warnBaseOnce.Do(func() {
 		log.Printf("[mcp] spill warning: 对外地址 %q 不可用于下载（未配置 PublicBaseURL /"+
@@ -848,16 +855,11 @@ func (c *countingWriter) str(s string) { _, _ = c.Write([]byte(s)) }
 
 // downloadHandler 返回 /spill/<id> 的下载 handler。
 //
-// 必须由插件用 Registry.Route 注册（基座会套上 token 认证）：它提供的是工具结果
-// 原文，无鉴权版本被实测过可以裸取内容。
+// 用 Registry.RoutePublic 注册：浏览器直接打开链接，不要求 Authorization。
+// 保护边界是不可猜测的 spill id（随机段 + 可选的副本归属信息），外加目录权限与 TTL。
 //
-// 认证之上还有两道判定，缺一个都不够：
-//   - **属主判定**：token 认证只回答「你是不是合法调用方」。不看属主时，任何持
-//     合法 token 的人拿到 id 就能读别人的结果（见 fileOwner）。非属主一律 404，
-//     不用 403 —— 403 会告诉对方「这个 id 确实存在」。
-//   - **归属副本转发**：spill 文件只在产出它的副本本地。经 LB 打到别的副本时，
-//     若 id 指向一个已知兄弟副本就把这次 GET 反代过去（保留 Authorization，
-//     由属主副本自己再认证一次），而不是回一个「文件不存在」。
+// 公开下载不再做按调用主体的属主校验——浏览器没有 MCP Subject，那层校验会把所有
+// 直链都拦成 404。多副本下归属兄弟副本的请求在进入本 handler 之前就已被基座反代走。
 func (s *store) downloadHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -898,32 +900,16 @@ func (s *store) downloadHandler() http.Handler {
 		}
 		switch kind {
 		case kindRaw:
-			// 宿主经 Writer 写入的内容：属主写在第一行的文件头里，payload 紧跟其后。
 			hdr, off, err := readRawHeader(f)
 			if err != nil {
-				log.Printf("[mcp] spill warning: 无法判定 %s 的属主，拒绝下载: %v", id, err)
+				log.Printf("[mcp] spill warning: 无法读取 %s 的文件头，拒绝下载: %v", id, err)
 				http.NotFound(w, r)
 				return
 			}
 			s.serveContent(w, r, id, hdr, off, f, info)
 			return
 		case kindExtern:
-			// 交给第三方写入方的内容：文件里没有头，格式在文件名后缀里，按共享处理。
 			s.serveContent(w, r, id, externHeader(id, format), 0, f, info)
-			return
-		}
-		own, err := readOwner(f)
-		if err != nil {
-			// 读不出属主就不给内容：宁可让一份文件取不回来，也不能在无法判定
-			// 归属的情况下把结果原文交出去。
-			log.Printf("[mcp] spill warning: 无法判定 %s 的属主，拒绝下载: %v", id, err)
-			http.NotFound(w, r)
-			return
-		}
-		if !own.allows(ownerOfSubject(runtime.SubjectFromContext(r.Context()))) {
-			// 记一行日志：这是越权尝试的唯一痕迹（响应对调用方是不可区分的 404）。
-			log.Printf("[mcp] spill warning: 非属主请求下载 %s，已按 404 拒绝", id)
-			http.NotFound(w, r)
 			return
 		}
 		if _, err := f.Seek(0, io.SeekStart); err != nil {
@@ -937,20 +923,9 @@ func (s *store) downloadHandler() http.Handler {
 	})
 }
 
-// serveContent 提供宿主写入的内容：按（真实或合成的）文件头判属主，
-// 再只把 payload 段交出去。
-//
-// Shared（宿主后台协程写入、没有可比对的调用主体；或交给第三方写入方的文件）时
-// 只要求 token 认证通过，这是 Put / CreatePath 那两条 API 刻意接受的放宽，写在
-// 各自的注释里；PutFor 写入的内容仍按「同 token 用途名 + 同一个人」判定，
-// 与中间件落盘一致。
+// serveContent 提供宿主写入的内容：公开下载，只把 payload 段交出去。
 func (s *store) serveContent(w http.ResponseWriter, r *http.Request, id string,
 	hdr rawHeader, off int64, f *os.File, info os.FileInfo) {
-	if !hdr.Shared && !hdr.Owner.allows(ownerOfSubject(runtime.SubjectFromContext(r.Context()))) {
-		log.Printf("[mcp] spill warning: 非属主请求下载 %s，已按 404 拒绝", id)
-		http.NotFound(w, r)
-		return
-	}
 	filename := hdr.Name
 	if filename == "" {
 		filename = id
@@ -976,13 +951,11 @@ func (s *store) serveContent(w http.ResponseWriter, r *http.Request, id string,
 //
 // 前提：PublicBaseURL 必须是**本副本可直连的地址**（Pod IP 之类），不能配成 LB
 // 地址 —— 配 LB 时所有副本的 SelfHostPort 相同，id 里也就没有区分副本的信息。
-// 转发目标只取 runtime.PeerAllowed 认可的地址（服务发现或静态 peers），防 SSRF；
-// 属主副本会重新做一次 token 认证与属主判定，转发不授予任何额外权限。
+// 转发目标只取 runtime.PeerAllowed 认可的地址（服务发现或静态 peers），防 SSRF。
+// 公开下载不再要求属主副本再做 token 认证。
 //
 // 已知风险（复审 M-3，沿用基座 runtime/owner_routing.go 的既有约定，本插件不单独改）：
-// 副本间走的是明文 http://，且把调用方的 Bearer token 原样带给属主副本 —— 跨机部署时
-// 内网抓包即可拿到该 token。要收掉这条风险需要在 peer 之间加 TLS、或改用副本间的
-// 内部凭据，那是基座层面的统一改动。
+// 副本间走的是明文 http://。要收掉这条风险需要在 peer 之间加 TLS。
 func (s *store) downloadOwnerExtractor(r *http.Request) string {
 	id := idFromDownloadPath(r.URL.Path)
 	if !idPattern.MatchString(id) {

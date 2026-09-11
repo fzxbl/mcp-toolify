@@ -62,20 +62,24 @@ on_error        = "deny"                       # 落盘失败时：deny（默认
 
 ## 下载端点
 
-`GET /spill/<id>`，由基座套 token 鉴权（`Registry.Route`），并在此之上做属主校验：
-落盘时记下 `Subject.Token`（用途名）与有身份时的 `Subject.ID`，非属主一律 404
-（不是 403，也不回显属主地址——避免存在性与拓扑泄漏）。
+`GET /spill/<id>`（挂到宿主后通常是 `/mcp/plugin/spill/<id>`），用
+`Registry.RoutePublic` 注册：**不要求 Authorization**。浏览器拿到链接可直接打开。
 
-- 摘要里的绝对 URL 取基座的 `PublicBaseURL`（不配则由 `http://<SelfAddr>` 推导）。它可以是
-  域名/VIP：属主在 id 里，请求落到任意副本都会被反代到属主。而 `SelfAddr` 必须是本副本
-  可直连的地址（它是副本身份）；只配它、且配成负载
-  均衡入口会让下载随机落到非属主副本。没配则摘要里只给本地路径，不给 URL。
+保护边界是不可猜测的 spill id（含随机段；有归属时还内嵌副本地址），外加目录权限
+（`0700`）与 TTL。下载侧不再做按调用主体的属主校验——公开下载场景下浏览器没有
+MCP Subject，那层校验只会把所有直链都拦成 404。
+
+- 摘要里的绝对 URL 取基座的 `PublicBaseURL`（不配则由 `http://<SelfAddr>` 推导）+
+  Mount 时固化的路径前缀。路径前缀在 `OnBuild` 固化，避免运行时 `routePrefix`
+  被清空后拼出裸 `/spill/<id>`。`PublicBaseURL` 可以是域名/VIP：属主在 id 里，
+  请求落到任意副本都会被反代到属主。而 `SelfAddr` 必须是本副本可直连的地址
+  （它是副本身份）；只配它、且配成负载均衡入口会让下载随机落到非属主副本。
+  没配则摘要里只给本地路径，不给 URL。
 - 多副本：id 内嵌产出该文件的副本地址。请求打到别的副本时，由基座的 owner 路由
   （`RegisterOwnerRoutedRoute`）在 handler 之前反向代理到属主副本（带环路保护头），
   仅限 peer 白名单内的地址，否则 404；本地已有这份文件时不转发，直接本地应答。
   本插件不自带转发实现。
-- **已知风险**：副本间转发走明文 `http://` 且把调用方的 Bearer token 原样带给属主副本。
-  副本跨机部署时请给 peer 之间加 TLS，或改用副本间的内部凭据。
+- **已知风险**：副本间转发走明文 `http://`。副本跨机部署时请给 peer 之间加 TLS。
 
 ## `spill_explore` 工具
 
@@ -108,9 +112,8 @@ on_error        = "deny"                       # 落盘失败时：deny（默认
 - `Put(name, format, data) (id, err)`：一次写完。
 - `Create(name, format) (*Writer, err)`：增量写入，`Create` 返回时 id 就已确定，可以先交给
   调用方、后台协程持续追加；写到一半也能被 `spill_explore` 读到。`Writer` 不是并发安全的。
-- `PutFor(sub, ...)` / `CreateFor(sub, ...)`：同上，但把内容绑定到调用主体（同一 token 用途名
-  ＋有身份时同一个人才能下载）。在工具处理函数里能拿到 `*runtime.Call` 时优先用它们——
-  `Put` / `Create` 写的内容是共享的，任何通过 token 认证的调用方都能下载。
+- `PutFor(sub, ...)` / `CreateFor(sub, ...)`：同上，并把主体写进文件头供审计/排查。
+  下载端点已公开，拿到 id 就能下，不再按 Subject 拦截。
 - `CreatePath(format) (id, path, err)`：只返回文件路径，给「只接受文件名」的第三方写入方
   （日志库、批量执行框架）。代价是本插件管不到写入过程：没有单文件上限，内容按共享处理。
   写入方顺带产生的兄弟文件（`<path>.wf` 之类）与本份内容共用 id、会一起被 TTL 回收，
@@ -118,7 +121,7 @@ on_error        = "deny"                       # 落盘失败时：deny（默认
 - `Open(id) (io.ReadSeekCloser, Info, err)`：宿主侧只读回取（例如把上一步输出喂给下一步），
   不必绕回 HTTP。
 - `URLFor(id) string`：对外下载地址；没有可用的对外地址时返回空串（不是错误），
-  拼进文案前请判空。
+  拼进文案前请判空。路径前缀取 Mount 时固化的值。
 - `SetDefaultDir(dir)`：见上文 `dir`。
 
 ## 必须知道的语义
@@ -129,12 +132,12 @@ on_error        = "deny"                       # 落盘失败时：deny（默认
   `structuredContent`，只改 `Content` 的话大结果照样过线进模型。
 - **不落 `tools/list` 等非 `tools/call` 的结果**：把工具清单换成下载链接等于把它藏起来。
 - **落盘内容是工具结果原文**，会在磁盘上留 `ttl` 那么久。工具返回值里若有敏感数据，目录权限
-  （`0700`）、属主校验与 `ttl` 就是它的全部保护——把 `ttl` 配得很长要想清楚这一点。
+  （`0700`）、不可猜测的 id 与 `ttl` 就是它的全部保护——把 `ttl` 配得很长要想清楚这一点。
 - 落盘成功时本次调用的 `Call.Meta` 里会写下 `spill.id`（常量 `spill.MetaID`），未落盘时不写。
 
 ## 启动日志
 
 生效配置只能从启动日志确认（`[mcp] spill:` 前缀）：`on_error` / `threshold_bytes`(序列化后字节) /
 `ttl` / `gc_interval` / `preview_bytes` / `max_file_mib` / `max_total_mib` / `dir`，
-以及一行下载鉴权粒度声明——基座默认不信任身份头（`Subject.ID` 为空），此时同一 token
-用途名的调用方之间可以互相下载 `/spill/` 结果。
+以及一行下载端点声明——公开下载（不要求 Authorization），并回显实际路径
+（如 `/mcp/plugin/spill/`）。

@@ -196,11 +196,12 @@ func (r *Registry) Tool(add func(s *mcp.Server)) {
 	}
 }
 
-// Route 注册插件自带的、**需要鉴权**的 HTTP 路由（如 /spill/<id>）。
-// 基座在挂载时统一套上 token 认证：插件路由与 MCP 端点在同一个进程里，
-// 一个裸奔的 /spill/<id> 就把大结果原文变成了无认证接口。
-//
+// Route 注册插件自带的、**需要鉴权**的 HTTP 路由。
+// 与 RoutePublic 分成两个方法而不是加一个 bool 参数：每个路由都必须显式表态，
+// 漏写一个 public 只会多一层鉴权，漏写一个 bool 却会少一层。
 // 同一个 pattern 重复注册即启动失败（见 claimRoute）。
+//
+// 需要鉴权的端点用它；公开下载、健康检查一类用 RoutePublic。
 func (r *Registry) Route(pattern string, h http.Handler) {
 	if r.claimRoute(pattern) {
 		r.routes[pattern] = h
