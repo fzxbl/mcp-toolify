@@ -181,14 +181,15 @@ func TestParseCandidates_MultiLineLabels(t *testing.T) {
 	}
 }
 
-// TestParseCandidates_StaleMarkers 陈旧/拼错的 mcp: 标记必须报错，不能静默丢标签。
-func TestParseCandidates_StaleMarkers(t *testing.T) {
+// TestParseCandidates_UnknownMarkers 非当前契约的 mcp: 标记一律按未知标记报错，
+// 不保留旧标记的迁移提示或兼容分支。
+func TestParseCandidates_UnknownMarkers(t *testing.T) {
 	cases := []struct {
 		dir      string
 		wantPart string
 	}{
-		{"./testdata/case_stale_tags", "mcp:tags is removed, use mcp:labels=capability=write"},
-		{"./testdata/case_stale_risk", "mcp:risk is removed, use mcp:labels=risk=high"},
+		{"./testdata/case_stale_tags", "unknown marker mcp:tags"},
+		{"./testdata/case_stale_risk", "unknown marker mcp:risk"},
 		{"./testdata/case_typo_marker", "unknown marker mcp:label"},
 		{"./testdata/case_empty_labels", "empty mcp:labels"},
 	}

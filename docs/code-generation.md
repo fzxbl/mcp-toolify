@@ -33,7 +33,7 @@ Example:
 func Lookup(id string) (Object, error) { /* ... */ }
 ```
 
-Every `mcp:` marker other than `mcp:tool` is validated. Unknown markers, the removed `mcp:tags` / `mcp:risk` markers, and empty `mcp:labels` make generation fail; errors include the source file and line number. Marker names are case-sensitive. Parameter descriptions only match parameters that actually exist in the function; an omitted description does not add default text.
+Every `mcp:` marker other than `mcp:tool` is validated. Unknown markers and empty `mcp:labels` make generation fail; errors include the source file and line number. Marker names are case-sensitive. Parameter descriptions only match parameters that actually exist in the function; an omitted description does not add default text.
 
 ## Tool metadata and input schema
 

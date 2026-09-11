@@ -260,13 +260,7 @@ var knownMarkers = map[string]bool{
 	"tool": true, "name": true, "labels": true, "bind": true, "import": true,
 }
 
-// removedMarkers 是已废弃标记到迁移提示的映射，单独给文案便于定位改法。
-var removedMarkers = map[string]string{
-	"tags": "mcp:tags is removed, use mcp:labels=capability=write",
-	"risk": "mcp:risk is removed, use mcp:labels=risk=high",
-}
-
-// checkMarkers 校验 godoc 里的 mcp: 标记名，未知或已废弃的一律报错。
+// checkMarkers 校验 godoc 里的 mcp: 标记名；不在当前契约内的标记一律报错。
 func checkMarkers(markers map[string]string) error {
 	keys := make([]string, 0, len(markers))
 	for k := range markers {
@@ -274,9 +268,6 @@ func checkMarkers(markers map[string]string) error {
 	}
 	sort.Strings(keys) // 多个未知标记时报错稳定，便于测试与复现
 	for _, k := range keys {
-		if msg, removed := removedMarkers[k]; removed {
-			return fmt.Errorf("%s", msg)
-		}
 		if !knownMarkers[k] {
 			return fmt.Errorf("unknown marker mcp:%s (known: bind, import, labels, name, tool)", k)
 		}

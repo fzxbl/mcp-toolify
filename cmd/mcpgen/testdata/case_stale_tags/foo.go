@@ -1,6 +1,6 @@
 package case_stale_tags
 
-// StaleTags 使用已废弃的 mcp:tags 标记，应报错并提示迁移到 mcp:labels。
+// StaleTags 使用非当前契约的 mcp:tags 标记，应按未知标记报错。
 //
 // mcp:tool
 // mcp:tags=write
