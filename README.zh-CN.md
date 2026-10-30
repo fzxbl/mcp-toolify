@@ -177,6 +177,8 @@ MCP 端点落在 `prefix` 本身，插件路由落在 `prefix + "/plugin"` 之�
 
 嵌入模式退出前必须调用 `RunStop`，以释放插件持有的文件、连接和后台协程。需要完全自己组装 handler 时仍可用 `r.Handlers()`（那时没有挂载前缀，等于挂在根上）。更多生命周期与配置说明见[运行时文档](docs/runtime.zh-CN.md)。
 
+基座与插件的全部运维日志（准入拒绝、`tools/list` 过滤、启动摘要、审计丢事件、spill 落盘失败）都经 `Config.Logger` 输出，带级别和 `logid` 字段。`*slog.Logger` 可直接传入，其它 logger 实现 `Log` 这一个方法即可，见[日志](docs/runtime.zh-CN.md#日志)。
+
 ## 多副本部署
 
 有状态资源使用 owned ID 编码属主副本。工具调用通过 `RegisterOwnerRouted(tool, param)` 声明承载 ID 的参数；插件 HTTP 路由通过 `RegisterOwnerRoutedRoute(pattern, extractor)` 声明属主提取方式。请求只会转发到 peer 白名单中的副本，并在属主副本上重新执行 token 认证。

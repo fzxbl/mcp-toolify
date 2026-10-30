@@ -71,7 +71,7 @@ The hook receives a plugin-owned copy, so in-place edits cannot mutate the real 
 
 ## Coverage limits and security
 
-Token admission is outside the plugin chain. A `tools/call` rejected by the runtime token gate never reaches audit; the HTTP status remains 200 and no audit event is emitted. Likewise, `tools/list` filtering happens after this plugin records the response, so `Event.Result` contains the pre-filter full registry, not necessarily what the token saw. The runtime's rate-limited warning logs (`[mcp] warning: 准入拒绝 ...` and `tools/list 过滤 ...`) are currently the only signals for those cases and must be collected for permission auditing.
+Token admission is outside the plugin chain. A `tools/call` rejected by the runtime token gate never reaches audit; the HTTP status remains 200 and no audit event is emitted. Likewise, `tools/list` filtering happens after this plugin records the response, so `Event.Result` contains the pre-filter full registry, not necessarily what the token saw. The runtime's rate-limited `Warn` logs emitted through `Config.Logger` (`[mcp] 准入拒绝 ...` and `[mcp] tools/list 过滤 ...`, carrying a `logid` field) are currently the only signals for those cases and must be collected for permission auditing.
 
 The runtime strips `Authorization`, `Proxy-Authorization`, `Cookie`, and `Set-Cookie` before audit; the plugin also rejects configuring them. Nevertheless, arguments may contain application secrets such as passwords. Use `SetArgsRedactor` or redesign the tool contract before sending events to long-term storage.
 

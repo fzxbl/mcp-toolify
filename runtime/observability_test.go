@@ -157,13 +157,13 @@ func TestWarnThrottleCollapsesRepeats(t *testing.T) {
 	logs := captureLog(t)
 	w := &warnThrottle{interval: time.Hour}
 	for i := 0; i < 5; i++ {
-		w.warn("重复告警 tool=%s", "demo.write")
+		w.warn(context.Background(), "重复告警 tool=%s", "demo.write")
 	}
 	if got := strings.Count(logs(), "重复告警"); got != 1 {
 		t.Errorf("一小时窗口内应只打 1 条，实际 %d 条", got)
 	}
 	w.last = time.Now().Add(-2 * time.Hour) // 窗口过去
-	w.warn("重复告警 tool=%s", "demo.write")
+	w.warn(context.Background(), "重复告警 tool=%s", "demo.write")
 	if line := logs(); !strings.Contains(line, "被压制 4 条") {
 		t.Errorf("放行的那条必须带被压制条数，实际 = %q", line)
 	}

@@ -20,12 +20,47 @@ The runtime package provides `Registry`, the HTTP MCP handler, token authenticat
 | `Match` | Label selector applied during registration; empty or all-whitespace means no filtering, while syntax errors fail startup. |
 | `RequiredPlugins` | Plugin names that must be installed; unioned with top-level `required_plugins` from the configuration file. Missing plugins fail startup. |
 | `Peers` | Static `host:port` allowlist of sibling replicas; `SetPeerProvider` may provide it dynamically, and the later setter replaces the earlier one. |
+| `Logger` | Receives every operational log line from the base and plugins, with a level, plus a `logid` field on request-path lines. Any `*slog.Logger` works as-is; other loggers implement the single `Log` method. `nil` forwards to `slog.Default()` (the standard `log` package unless the host changed it). See [Logging](#logging). |
 
 `ConfigPath` and at least one token are startup prerequisites; the runtime has no configuration switch for disabling token authentication. See [`config.example.toml`](../config.example.toml) for a complete field example.
 
+### Logging
+
+The base and the bundled plugins write no line through the standard `log` package directly; everything goes through `runtime.Logger`:
+
+```go
+type Logger interface {
+	Log(ctx context.Context, level slog.Level, msg string, args ...any)
+}
+```
+
+The signature matches `(*slog.Logger).Log`, so a `*slog.Logger` can be passed directly; zap, zerolog and logrus can be wrapped with their slog handlers via `slog.New(h)`. Any other logger implements this one method, for example GoFrame's glog:
+
+```go
+type glogAdapter struct{ l *glog.Logger }
+
+func (a glogAdapter) Log(ctx context.Context, lvl slog.Level, msg string, args ...any) {
+	v := append([]any{msg}, args...)
+	switch {
+	case lvl >= slog.LevelError:
+		a.l.Error(ctx, v...)
+	case lvl >= slog.LevelWarn:
+		a.l.Warning(ctx, v...)
+	case lvl >= slog.LevelInfo:
+		a.l.Info(ctx, v...)
+	default:
+		a.l.Debug(ctx, v...)
+	}
+}
+
+r := toolify.New(toolify.Config{ConfigPath: "mcp.toml", Logger: glogAdapter{g.Log()}}, tools.RegisterAll)
+```
+
+Contract: `msg` is a complete, human-readable sentence; `args` are slog-style key/value pairs and currently carry only `logid` (the join key with access logs and audit events). Levels: `Info` for startup summaries and housekeeping, `Warn` for admission denials, `tools/list` filtering and risky configuration, `Error` for lost audit events, spill write failures and panics, `Debug` for per-request diagnostics. Plugins obtain the same logger via `Registry.Logger()`.
+
 ### Process-wide state
 
-The following state is shared by the process rather than isolated per `Registry`: the mount prefix (given by `Mount`), owner-routed tool declarations, owner-routed path declarations, and the peer allowlist/provider. A process should assemble one mutually compatible configuration; use separate processes when different prefixes, owner declarations, or peer sets are needed. Call `Config.Peers`, `SetPeerProvider`, and owner-route registration before traffic begins.
+The following state is shared by the process rather than isolated per `Registry`: the mount prefix (given by `Mount`), owner-routed tool declarations, owner-routed path declarations, the peer allowlist/provider, and the logger (`Config.Logger`, set when the `Registry` is constructed). A process should assemble one mutually compatible configuration; use separate processes when different prefixes, owner declarations, or peer sets are needed. Call `Config.Peers`, `SetPeerProvider`, and owner-route registration before traffic begins.
 
 ### Base TOML sections
 

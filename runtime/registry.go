@@ -3,7 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"runtime/debug"
@@ -69,6 +69,8 @@ type Registry struct {
 // 于是「基座以为自己在哪」与「实际挂在哪」不可能对不上。未经 Mount 时前缀为空
 // （挂在根上），Start 与直接用 Handlers 的自定义组装都是这个形态。
 func NewRegistry(cfg Config) *Registry {
+	// 最先设置：New 紧接着就会打工具注册摘要，插件 Install 期也会打日志。
+	SetLogger(cfg.Logger)
 	r := &Registry{
 		cfg: cfg,
 		srv: mcp.NewServer(&mcp.Implementation{
@@ -100,7 +102,7 @@ func New(cfg Config, registrar Registrar) *Registry {
 	}
 	registered, filtered := opts.Counts()
 	// 计数是「selector 合法但 label 拼错导致 0 匹配」的唯一线索：Parse 抓不到它。
-	log.Printf("[mcp] tools: effective match=%q enable=%v registered=%d filtered=%d",
+	logf(context.Background(), slog.LevelInfo, "[mcp] tools: effective match=%q enable=%v registered=%d filtered=%d",
 		cfg.Match, cfg.Enable, registered, filtered)
 	return r
 }
@@ -112,6 +114,10 @@ func (r *Registry) RegisterCounts() (registered, filtered int) { return r.opts.C
 // 注意：必须用 AddTool 注册（它同时登记 labels）；直接 mcp.AddTool 的工具在 token
 // 准入里既不可见也不可执行（deny-by-default）。
 func (r *Registry) Server() *mcp.Server { return r.srv }
+
+// Logger 返回宿主注入的 Logger（未注入时为默认实现），插件的运维日志都应走它，
+// 而不是直接用标准库 log——否则宿主接了自己的日志系统之后，这些行仍然只在 stderr。
+func (r *Registry) Logger() Logger { return logger() }
 
 // Named 声明当前插件名，用于 required_plugins 校验与启动日志。
 func (r *Registry) Named(name string) { r.names = append(r.names, name) }
@@ -228,7 +234,7 @@ func (r *Registry) claimRoute(pattern string) bool {
 		r.err = fmt.Errorf("HTTP 路由 %q 被重复注册（已存在一条%s的同名路由）："+
 			"后注册者若覆盖前者，被覆盖的那一路从此静默不可达，故拒绝启动", pattern, kind)
 	}
-	log.Printf("[mcp] error: HTTP 路由 %q 重复注册，已拒绝（已存在%s的同名路由）", pattern, kind)
+	logf(context.Background(), slog.LevelError, "[mcp] HTTP 路由 %q 重复注册，已拒绝（已存在%s的同名路由）", pattern, kind)
 	return false
 }
 
@@ -262,7 +268,7 @@ func (r *Registry) Routes() map[string]http.Handler {
 	if r.az == nil {
 		// 只可能出现在「绕过 build 直接调 Routes」的路径上。宁可少挂路由，
 		// 也不能把需要鉴权的路由无保护地交出去。
-		log.Printf("[mcp] warning: token 准入尚未初始化，%d 条需鉴权的插件路由被跳过", len(r.routes))
+		logf(context.Background(), slog.LevelWarn, "[mcp] token 准入尚未初始化，%d 条需鉴权的插件路由被跳过", len(r.routes))
 		return out
 	}
 	for pattern, h := range r.routes {
@@ -355,7 +361,7 @@ func (r *Registry) runOnBuild() error {
 func callBuildHook(fn func() error) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			log.Printf("[mcp] build hook panic: %v\n%s", p, debug.Stack())
+			logf(context.Background(), slog.LevelError, "[mcp] build hook panic: %v\n%s", p, debug.Stack())
 			err = fmt.Errorf("build 期校验钩子 panic: %v（详细堆栈见本地日志）", p)
 		}
 	}()
@@ -391,7 +397,7 @@ func (r *Registry) RunStop(ctx context.Context) {
 func callStopHook(i int, fn func()) {
 	defer func() {
 		if p := recover(); p != nil {
-			log.Printf("[mcp] error: 清理钩子[%d] panic，已跳过并继续执行其余钩子: %v\n%s",
+			logf(context.Background(), slog.LevelError, "[mcp] 清理钩子[%d] panic，已跳过并继续执行其余钩子: %v\n%s",
 				i, p, debug.Stack())
 		}
 	}()
@@ -432,7 +438,7 @@ func (r *Registry) validate() error {
 			return fmt.Errorf("required plugin %q not installed", need)
 		}
 	}
-	log.Printf("[mcp] plugin chain (outer→inner): %v", r.names)
+	logf(context.Background(), slog.LevelInfo, "[mcp] plugin chain (outer→inner): %v", r.names)
 	return nil
 }
 

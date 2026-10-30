@@ -140,3 +140,7 @@ MCP Subject，那层校验只会把所有直链都拦成 404。
 `ttl` / `gc_interval` / `preview_bytes` / `max_file_mib` / `max_total_mib` / `dir`，
 以及一行下载端点声明——公开下载（不要求 Authorization），并回显实际路径
 （如 `/mcp/plugin/spill/`）。
+
+落盘失败以 `Error` 级别记录（`[mcp] spill: 落盘失败 …`），含工具、大小、策略与 `logid` 字段；
+返回给调用方的 `deny` 错误不含目录细节。全部日志都经宿主的 `Config.Logger` 输出，
+逐次拼下载 URL 的诊断日志是 `Debug` 级别。

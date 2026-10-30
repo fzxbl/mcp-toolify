@@ -3,7 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 
@@ -39,6 +39,12 @@ type Config struct {
 	// Peers 是静态兄弟副本白名单（host:port），供 owner 路由校验反代目标。
 	// 多副本部署通常改用 SetPeerProvider 对接服务发现。
 	Peers []string
+	// Logger 接收基座与插件的全部运维日志（准入拒绝、tools/list 过滤、启动摘要、
+	// 审计丢事件、落盘失败……），带级别，请求路径上的日志带 logid 字段。
+	// *slog.Logger 直接可用，其它 logger 实现 Logger 的一个方法即可（见 Logger）。
+	// nil 时转给 slog.Default()，未设置 slog 时即标准库 log。
+	// 进程级生效：NewRegistry 时设置，与 SelfAddr 等一样后构造者覆盖前者。
+	Logger Logger `toml:"-"`
 }
 
 // Registrar 是生成代码暴露的注册函数类型（通常是生成的 tools.RegisterAll）。
@@ -84,7 +90,7 @@ func (r *Registry) Start(ctx context.Context) error {
 	mux.Handle("/", handler)
 	srv := &http.Server{Handler: mux}
 
-	log.Printf("[mcp] server listening on http://%s (enable=%v match=%q public=%s)",
+	logf(ctx, slog.LevelInfo, "[mcp] server listening on http://%s (enable=%v match=%q public=%s)",
 		ln.Addr().String(), r.cfg.Enable, r.cfg.Match, PublicBaseURL())
 
 	errCh := make(chan error, 1)

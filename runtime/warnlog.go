@@ -1,7 +1,8 @@
 package runtime
 
 import (
-	"log"
+	"context"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -24,10 +25,11 @@ type warnThrottle struct {
 	total    int64
 }
 
-// warn 记一次告警事件，按限流决定是否真的打日志。
-func (w *warnThrottle) warn(format string, args ...any) {
+// warn 记一次告警事件，按限流决定是否真的打日志（Warn 级别，ctx 里的 logid 随行带上）。
+// 被压制的那些行的 logid 不会出现在日志里：限流的代价，要逐条对账请看审计流。
+func (w *warnThrottle) warn(ctx context.Context, format string, args ...any) {
 	if w == nil {
-		log.Printf("[mcp] warning: "+format, args...)
+		logf(ctx, slog.LevelWarn, "[mcp] "+format, args...)
 		return
 	}
 	now := time.Now()
@@ -45,9 +47,9 @@ func (w *warnThrottle) warn(format string, args ...any) {
 	w.suppress, w.last = 0, now
 	w.mu.Unlock()
 	if suppressed > 0 {
-		log.Printf("[mcp] warning: "+format+"（同类告警被压制 %d 条，累计 %d 条）",
+		logf(ctx, slog.LevelWarn, "[mcp] "+format+"（同类告警被压制 %d 条，累计 %d 条）",
 			append(args, suppressed, total)...)
 		return
 	}
-	log.Printf("[mcp] warning: "+format+"（累计 %d 条）", append(args, total)...)
+	logf(ctx, slog.LevelWarn, "[mcp] "+format+"（累计 %d 条）", append(args, total)...)
 }

@@ -16,7 +16,7 @@ import (
 func hostStore(t *testing.T) *store {
 	t.Helper()
 	st, err := newStore(t.TempDir(), time.Hour, time.Hour,
-		quota{MaxFileBytes: 1 << 20, MaxTotalBytes: 8 << 20})
+		quota{MaxFileBytes: 1 << 20, MaxTotalBytes: 8 << 20}, nil)
 	if err != nil {
 		t.Fatalf("newStore: %v", err)
 	}

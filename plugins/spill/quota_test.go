@@ -26,7 +26,7 @@ func textResult(n int) *mcp.CallToolResult {
 // storeWithQuota 在临时目录上造一个带上限的 store。
 func storeWithQuota(t *testing.T, q quota) *store {
 	t.Helper()
-	st, err := newStore(t.TempDir(), time.Hour, time.Hour, q)
+	st, err := newStore(t.TempDir(), time.Hour, time.Hour, q, nil)
 	if err != nil {
 		t.Fatalf("newStore: %v", err)
 	}
@@ -158,12 +158,12 @@ func exists(path string) bool {
 func TestGCLeavesOtherProcessFiles(t *testing.T) {
 	withBaseURL(t, "") // 无对外地址：id 不带副本归属信息，最难判断归属的那一档
 	dir := t.TempDir()
-	long, err := newStore(dir, 24*time.Hour, time.Hour, quota{})
+	long, err := newStore(dir, 24*time.Hour, time.Hour, quota{}, nil)
 	if err != nil {
 		t.Fatalf("newStore B: %v", err)
 	}
 	t.Cleanup(long.close)
-	short, err := newStore(dir, time.Minute, time.Hour, quota{})
+	short, err := newStore(dir, time.Minute, time.Hour, quota{}, nil)
 	if err != nil {
 		t.Fatalf("newStore A: %v", err)
 	}

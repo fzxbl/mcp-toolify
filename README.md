@@ -122,24 +122,26 @@ The runnable example is under [`example/`](./example).
 ## Annotation overview
 
 Annotations are written in the godoc comment of an exported function:
+
 - `mcp:tool`: expose the function as an MCP tool.
 - `mcp:name=<name>`: override the default name, which is `<package>.<function_name>` in snake case.
 - `mcp:labels=k=v,k2=v2`: attach opaque labels used by registration filters, token admission, and plugins.
 - `mcp:bind=<param>:<Type>`: bind an interface parameter to a concrete type that can be built from JSON.
 - `mcp:import=<path>`: import a package needed by a `mcp:bind` type.
 - `param: <name> — <description>`: add a description to the generated JSON Schema parameter.
-Labels are opaque key-value pairs. The base does not assign meaning to custom keys. `name` and `pkg` are built-in projected labels; matching overwrites tool-provided values for those keys, so they should not be set manually.
-Selectors use Kubernetes-style semantics: conditions in one selector are ANDed, selector entries in a list are ORed, and `!=` and `notin` also match missing keys. An empty selector matches every tool. See the [code generation documentation](docs/code-generation.md) for the complete generation behavior.
+  Labels are opaque key-value pairs. The base does not assign meaning to custom keys. `name` and `pkg` are built-in projected labels; matching overwrites tool-provided values for those keys, so they should not be set manually.
+  Selectors use Kubernetes-style semantics: conditions in one selector are ANDed, selector entries in a list are ORed, and `!=` and `notin` also match missing keys. An empty selector matches every tool. See the [code generation documentation](docs/code-generation.md) for the complete generation behavior.
 
 ## Authentication and admission
 
 Token authentication is mandatory. `Config.ConfigPath` must point to a TOML file containing at least one `[[tokens]]`; missing configuration or tokens causes startup to fail.
 Each token controls access with `allow` and `deny` selectors:
+
 - `deny` takes precedence over `allow`.
 - A tool matching neither is denied.
 - `tools/list` and `tools/call` use the same rules, so visibility and execution stay consistent.
 - HTTP requests use `Authorization: Bearer <token>`.
-Caller-provided identity headers are not trusted by default. Enable `trust_identity_header` only behind a gateway that authenticates the caller and overwrites those headers. Service accounts and robots should use `identity = "fixed:<id>"` to bind an identity to the token.
+  Caller-provided identity headers are not trusted by default. Enable `trust_identity_header` only behind a gateway that authenticates the caller and overwrites those headers. Service accounts and robots should use `identity = "fixed:<id>"` to bind an identity to the token.
 
 ## Plugin mechanism
 
@@ -176,6 +178,8 @@ if err := r.Mount("/mcp", func(pattern string, h http.Handler) {
 The MCP endpoint lands on `prefix` itself; plugin routes land under `prefix + "/plugin"`. That same prefix also drives the absolute URLs plugins hand to agents and the inter-replica forwarding target, so **do not rewrite the pattern inside mountFunc** (no extra `StripPrefix`, no additional prefix) — change the `Mount` argument instead. `Mount` also verifies at startup that every owner-routed pattern has a matching route, returning an error when they disagree.
 
 Embedded deployments must call `RunStop` during shutdown so plugins can release files, connections, and background goroutines. If you need to assemble handlers entirely yourself, `r.Handlers()` is still available (with no mount prefix, i.e. mounted at the root). See the [runtime documentation](docs/runtime.md) for lifecycle and configuration details.
+
+All operational logs from the base and plugins (admission denials, `tools/list` filtering, startup summaries, lost audit events, spill failures) go through `Config.Logger`, with levels and a `logid` field. Pass a `*slog.Logger` directly, or adapt any other logger by implementing its single `Log` method — see [Logging](docs/runtime.md#logging).
 
 ## Multiple replicas
 

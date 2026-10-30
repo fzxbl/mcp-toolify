@@ -168,8 +168,9 @@ deny = ["!risk", "!capability", "dangerous=true"]
 #     NOT covered by the audit stream: the base's token-authz denials (that layer
 #     sits BEFORE all plugins, so an unauthorized tools/call produces zero events),
 #     and tools/list records the UNFILTERED tool list (per-token filtering happens
-#     after this plugin). Collect the base's "[mcp] warning: 准入拒绝 …" /
-#     "tools/list 过滤 …" logs too when auditing who saw or tried what.
+#     after this plugin). Collect the base's Warn logs "[mcp] 准入拒绝 …" /
+#     "[mcp] tools/list 过滤 …" (emitted via Config.Logger) too when auditing who
+#     saw or tried what.
 # 中: 应**最先**安装，位于插件链**最外层**：这样既记得下被内层插件拒绝的调用，也看得到
 #     内层插件（spill）改写后的最终结果。
 #     投递是**异步、尽力而为**的：中间件在返回路径上只入队，后台单 worker 把事件交给你用
@@ -192,7 +193,8 @@ deny = ["!risk", "!capability", "dangerous=true"]
 #     审计流覆盖不到的两处：基座 token 准入的拒绝（那一层在所有插件**之前**，越权
 #     tools/call 在审计流里是 0 条事件）；以及 tools/list 记的是**过滤前**的全量清单
 #     （按 token 过滤发生在本插件之后）。做「谁看见/试过哪些工具」的权限审计时，
-#     必须把基座那两条 "[mcp] warning: 准入拒绝 …" / "tools/list 过滤 …" 日志一并采集。
+#     必须把基座经 Config.Logger 打的两条 Warn 日志 "[mcp] 准入拒绝 …" /
+#     "[mcp] tools/list 过滤 …" 一并采集。
 # [audit]
 # headers = ["X-Tenant", "User-Agent"]
 # queue_size = 4096

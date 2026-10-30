@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -62,7 +63,7 @@ func okSection(t *testing.T, s Section) Section {
 func newMW(t *testing.T, s Section) (runtime.Middleware, *dispatcher) {
 	t.Helper()
 	sec := okSection(t, s)
-	d := newDispatcher(sec.QueueSize, sec.flush)
+	d := newDispatcher(sec.QueueSize, sec.flush, slog.Default())
 	t.Cleanup(d.stop)
 	return middleware(sec, d), d
 }

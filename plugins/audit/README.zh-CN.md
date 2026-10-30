@@ -96,7 +96,7 @@ audit.OnEvent(func(e audit.Event) error {
 - **`tools/list` 记的是过滤前的全量清单**：基座按 token 过滤发生在本插件记录之后，所以
   `Event.Result` 不等于该 token 实际看到的那份。
 
-两者目前的唯一信号是基座打的 `[mcp] warning: 准入拒绝 …` / `tools/list 过滤 …` 日志（限流）。
+两者目前的唯一信号是基座经 `Config.Logger` 打的两条 Warn 日志 `[mcp] 准入拒绝 …` / `[mcp] tools/list 过滤 …`（限流，带 `logid` 字段）。
 做「谁看见 / 试过哪些工具」这类权限审计时，必须把那两条日志一并采集。
 
 另外：工具入参不得承载密文。`login(user, password)` 这类工具的密文会原样进长期审计存储；

@@ -3,7 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -128,10 +128,10 @@ func NewTokenAuthz(cfg TokenAuthzConfig) (*TokenAuthz, error) {
 		az.byToken[tk] = r
 		az.byName[c.Name] = r
 		// 打印生效规则原文，便于上线自检；只打 name 与 selector，不打 token 值。
-		log.Printf("[mcp] token %s identity=%s allow=%v deny=%v",
+		logf(context.Background(), slog.LevelInfo, "[mcp] token %s identity=%s allow=%v deny=%v",
 			c.Name, describeIdentitySource(r, cfg.TrustIdentityHeader), c.Allow, c.Deny)
 		if needsMissingKeyWarning(r.allow, r.deny) {
-			log.Printf("[mcp] warning: token %s 的 allow 用了 !=/notin，但 deny 没有缺失 label 的兜底条件："+
+			logf(context.Background(), slog.LevelWarn, "[mcp] token %s 的 allow 用了 !=/notin，但 deny 没有缺失 label 的兜底条件："+
 				"k8s 语义下 !=/notin 对缺失该 key 的工具匹配成功，忘记标注的新工具会被放行；"+
 				"建议对你用于分级的 label 加 !<key> 条件（例如 !risk）", c.Name)
 		}
@@ -174,7 +174,7 @@ func describeIdentitySource(r *tokenRule, trustHeader bool) string {
 // 误解的唯一运行期信号。
 func (a *TokenAuthz) logIdentityMode() {
 	if a.trustIdentityHeader {
-		log.Printf("[mcp] identity mode: 信任请求头 %v（trust_identity_header=true）——"+
+		logf(context.Background(), slog.LevelWarn, "[mcp] identity mode: 信任请求头 %v（trust_identity_header=true）——"+
 			"务必确保这些头由可信网关重写，不能透传客户端原值", a.IdentityHeaders())
 		return
 	}
@@ -184,7 +184,7 @@ func (a *TokenAuthz) logIdentityMode() {
 			fixed++
 		}
 	}
-	log.Printf("[mcp] identity mode: 不信任请求头（trust_identity_header 未开启），"+
+	logf(context.Background(), slog.LevelInfo, "[mcp] identity mode: 不信任请求头（trust_identity_header 未开启），"+
 		"%d/%d 个 token 绑定了固定身份；其余 token 的 Subject.ID 恒为空，"+
 		"依赖按人判定的插件需自行处理空身份", fixed, len(a.byName))
 }
@@ -267,13 +267,13 @@ func (a *TokenAuthz) Middleware() Middleware {
 			rule := a.ruleOf(subjectToken(c))
 			switch c.Method {
 			case "tools/call":
-				if ok, reason := checkCall(rule, c); !ok {
+				if ok, reason := checkCall(ctx, rule, c); !ok {
 					// 必须留一条日志：本中间件固定装在**插件链之前**，因此它的拒绝
 					// 根本不会到达 audit 插件（终审实测：只读 token 的三次越权尝试在
 					// 审计流里 0 条事件，HTTP 状态还是 200）。少了这行，基座自己的
 					// 访问控制就成了全系统唯一不可观测的管控动作。
 					// 只记 token 用途名不记 token 值（理由见 checkCall 注释）。
-					authzDenyAlarm.warn("准入拒绝: token=%s tool=%s reason=%s",
+					authzDenyAlarm.warn(ctx, "准入拒绝: token=%s tool=%s reason=%s",
 						ruleName(rule), c.Tool, reason)
 					return DenyResult(c, "token_authz", reason), nil
 				}
@@ -284,13 +284,13 @@ func (a *TokenAuthz) Middleware() Middleware {
 					return res, err
 				}
 				before := len(res.List.Tools)
-				res.List.Tools = visibleTools(rule, res.List.Tools)
+				res.List.Tools = visibleTools(ctx, rule, res.List.Tools)
 				// 过滤发生在 next **返回之后**，所以链内的 audit 记到的是过滤**前**的
 				// 全量清单（终审实测：只读 token 的审计事件里有它根本看不到的写工具）。
 				// 这一行是「这个 token 实际看见了几个」的唯一信号；缺了它，复盘时会
 				// 按审计记录得出与事实相反的结论。
 				if hidden := before - len(res.List.Tools); hidden > 0 {
-					authzListAlarm.warn("tools/list 过滤: token=%s 可见 %d 个、隐藏 %d 个"+
+					authzListAlarm.warn(ctx, "tools/list 过滤: token=%s 可见 %d 个、隐藏 %d 个"+
 						"（审计事件记的是过滤前的全量清单）",
 						ruleName(rule), len(res.List.Tools), hidden)
 				}
@@ -323,11 +323,11 @@ func ruleName(rule *tokenRule) string {
 //
 // 原因文案绝不回显传入的 Subject.Token：它本该是配置里的用途名，但上游填错时可能是
 // token 值，而拒绝原因会同时进日志与返回给调用方（这是唯一可能泄漏 token 值的路径）。
-func checkCall(rule *tokenRule, c *Call) (bool, string) {
+func checkCall(ctx context.Context, rule *tokenRule, c *Call) (bool, string) {
 	if rule == nil {
 		// 这类故障的表现（工具全没了）与「selector 拼错导致 0 匹配」完全一样，
 		// 必须留一条日志才能区分；同样不回显传入值。
-		log.Printf("[mcp] warning: 收到未知 token 用途名的调用（tool=%s），"+
+		logf(ctx, slog.LevelWarn, "[mcp] 收到未知 token 用途名的调用（tool=%s），"+
 			"请检查 HTTP 层是否把 token 用途名而非 token 值填进了 Subject.Token", c.Tool)
 		return false, "unknown token name"
 	}
@@ -344,10 +344,10 @@ func checkCall(rule *tokenRule, c *Call) (bool, string) {
 // visibleTools 过滤 tools/list 的结果，返回该规则可见的工具。
 // 返回新切片而不是原地复用底层数组：上游（SDK / 链上其它环节 / 插件）可能仍持有
 // 那个切片，原地改写会让一个 token 的过滤结果污染另一个 token 看到的清单。
-func visibleTools(rule *tokenRule, all []*mcp.Tool) []*mcp.Tool {
+func visibleTools(ctx context.Context, rule *tokenRule, all []*mcp.Tool) []*mcp.Tool {
 	visible := make([]*mcp.Tool, 0, len(all))
 	if rule == nil {
-		log.Printf("[mcp] warning: 收到未知 token 用途名的 tools/list，" +
+		logf(ctx, slog.LevelWarn, "[mcp] 收到未知 token 用途名的 tools/list，"+
 			"请检查 HTTP 层是否把 token 用途名而非 token 值填进了 Subject.Token")
 		return visible
 	}

@@ -33,6 +33,10 @@ type Registrar = runtime.Registrar
 // Registry 是插件的唯一依赖类型：注册中间件、MCP 工具、HTTP 路由与清理钩子。
 type Registry = runtime.Registry
 
+// Logger 是 Config.Logger 的类型：基座与插件的运维日志都经它输出。
+// *slog.Logger 直接满足；其它 logger 实现这一个 Log 方法即可。
+type Logger = runtime.Logger
+
 // Call 是一次 MCP 请求的上下文，插件中间件的入参。
 type Call = runtime.Call
 

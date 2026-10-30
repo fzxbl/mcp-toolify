@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -279,8 +279,8 @@ func ownerFromCall(body []byte) (string, bool) {
 // 每次转发都记一行：跨副本转发在本副本原本不留任何痕迹，「这个回调/下载到底去哪了」
 // 只能去属主侧翻日志。带上 logid，好和属主那边的同一条请求对起来。
 func proxyToOwner(w http.ResponseWriter, r *http.Request, owner string, body []byte) {
-	log.Printf("[mcp] owner routing: %s %s → 属主副本 %s logid=%s",
-		r.Method, r.URL.Path, owner, LogIDFromContext(r.Context()))
+	logf(r.Context(), slog.LevelInfo, "[mcp] owner routing: %s %s → 属主副本 %s",
+		r.Method, r.URL.Path, owner)
 	target := &url.URL{Scheme: "http", Host: owner}
 	rp := &httputil.ReverseProxy{
 		FlushInterval: -1, // 立即冲刷，支持 text/event-stream
@@ -295,7 +295,7 @@ func proxyToOwner(w http.ResponseWriter, r *http.Request, owner string, body []b
 			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			log.Printf("[mcp] owner routing warning: 转发 %s 到属主副本 %s 失败: %v",
+			logf(r.Context(), slog.LevelWarn, "[mcp] owner routing: 转发 %s 到属主副本 %s 失败: %v",
 				r.URL.Path, owner, err)
 			http.NotFound(w, r)
 		},

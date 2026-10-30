@@ -84,7 +84,7 @@ func HTTPLogID(next http.Handler) http.Handler {
 		id := strings.TrimSpace(r.Header.Get(name))
 		if !validLogID(id) {
 			if id != "" {
-				logIDAlarm.warn("入站 logid 不合规（长度 %d，要求 1-%d 位 %s），已丢弃并自生成",
+				logIDAlarm.warn(r.Context(), "入站 logid 不合规（长度 %d，要求 1-%d 位 %s），已丢弃并自生成",
 					len(id), maxLogIDLen, "[A-Za-z0-9._:-]")
 			}
 			id = generateLogID()

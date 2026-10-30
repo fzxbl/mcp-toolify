@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -155,6 +155,9 @@ type store struct {
 	started   atomic.Bool
 	startOnce sync.Once
 	stopOnce  sync.Once
+
+	// log 是宿主经 Registry.Logger 注入的日志出口；nil 时回退 slog.Default()（见 logf）。
+	log runtime.Logger
 }
 
 // newStore 构造 store，建好落盘目录并校验它的安全性。
@@ -167,14 +170,16 @@ type store struct {
 //     「目录 0700」这条承诺在预先存在的 0777 目录上是静默失效的（审查实测）。
 //     而默认目录 <tmp>/mcp-toolify/spill 是可预测路径 —— 这正是经典的 /tmp
 //     预创建攻击：别人先建好目录，就能读走里面所有工具结果、或塞软链诱导读取。
-func newStore(dir string, ttl, gcEvery time.Duration, q quota) (*store, error) {
+//
+// l 在构造时就要给：ensurePrivateDir 收紧权限这条告警发生在构造过程中。
+func newStore(dir string, ttl, gcEvery time.Duration, q quota, l runtime.Logger) (*store, error) {
 	if dir == "" {
 		return nil, fmt.Errorf("%s", "spill 落盘目录为空")
 	}
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return nil, fmt.Errorf("spill 建目录 %s: %w", dir, err)
 	}
-	if err := ensurePrivateDir(dir); err != nil {
+	if err := ensurePrivateDir(dir, l); err != nil {
 		return nil, err
 	}
 	// 目录句柄只在这里取一次，之后所有读写删都走它（root.OpenFile / root.Remove / …）。
@@ -193,6 +198,7 @@ func newStore(dir string, ttl, gcEvery time.Duration, q quota) (*store, error) {
 		root:    root,
 		created: map[string]int64{},
 		stop:    make(chan struct{}), done: make(chan struct{}),
+		log: l,
 	}
 	// 记下目录身份，供每轮 GC 对账（见 checkDirIdentity）。取不到就不做这项检查。
 	if info, err := os.Lstat(dir); err == nil {
@@ -228,10 +234,10 @@ func (s *store) checkDirIdentity() {
 		return // 结论与上一轮相同，不重复打
 	}
 	if !swapped {
-		log.Printf("[mcp] spill: 落盘目录路径 %s 已恢复为启动时那个目录", s.dir)
+		logf(s.log, slog.LevelInfo, "", "[mcp] spill: 落盘目录路径 %s 已恢复为启动时那个目录", s.dir)
 		return
 	}
-	log.Printf("[mcp] spill warning: 落盘目录路径 %s 已不是启动时那个目录"+
+	logf(s.log, slog.LevelWarn, "", "[mcp] spill: 落盘目录路径 %s 已不是启动时那个目录"+
 		"（有人把它挪走、删掉或换成了符号链接）。本服务的落盘**未受影响**："+
 		"文件仍在原目录（进程持有目录句柄，inode 保持不变），下载也照旧。"+
 		"**不要为此重启服务** —— 重启会让新的目录句柄落到被换上去的那个路径上。"+
@@ -323,7 +329,7 @@ func (s *store) createFile(name string) (*os.File, error) {
 //
 // 先 chmod 再复查，而不是一上来就拒绝：目录由本进程用户拥有时（常见的
 // 「上次跑的时候 umask 松了」）应该顺手修好；改不动（目录属于别人）才启动失败。
-func ensurePrivateDir(dir string) error {
+func ensurePrivateDir(dir string, l runtime.Logger) error {
 	info, err := os.Lstat(dir)
 	if err != nil {
 		return fmt.Errorf("spill 检查目录 %s: %w", dir, err)
@@ -350,7 +356,7 @@ func ensurePrivateDir(dir string) error {
 		if err := checkDirMode(info.Mode().Perm()); err != nil {
 			return fmt.Errorf("spill 落盘目录 %s: %w", dir, err)
 		}
-		log.Printf("[mcp] spill: 落盘目录 %s 的权限已收紧为 %#o", dir, os.FileMode(dirPerm))
+		logf(l, slog.LevelWarn, "", "[mcp] spill: 落盘目录 %s 的权限已收紧为 %#o", dir, os.FileMode(dirPerm))
 	}
 	return nil
 }
@@ -393,10 +399,10 @@ func (s *store) close() {
 			// 句柄占着一个 fd，且关掉之后任何迟到的写/读都会明确失败，
 			// 不会摸到一个已经不属于本进程的目录。
 			if err := s.root.Close(); err != nil {
-				log.Printf("[mcp] spill warning: 关闭目录句柄失败: %v", err)
+				logf(s.log, slog.LevelWarn, "", "[mcp] spill: 关闭目录句柄失败: %v", err)
 			}
 		}
-		log.Printf("[mcp] spill: 已停止回收协程，落盘目录 %s 的文件按 ttl=%s 到期回收",
+		logf(s.log, slog.LevelInfo, "", "[mcp] spill: 已停止回收协程，落盘目录 %s 的文件按 ttl=%s 到期回收",
 			s.dir, s.ttl)
 	})
 }
@@ -444,7 +450,7 @@ func (s *store) gcOnce() {
 	evicted, evictedBytes := s.evictToLimit(kept, 0)
 	s.recount(nil)
 	if removed+evicted > 0 {
-		log.Printf("[mcp] spill: 回收 %d 个过期文件（%d 字节）、按总量上限淘汰 %d 个"+
+		logf(s.log, slog.LevelInfo, "", "[mcp] spill: 回收 %d 个过期文件（%d 字节）、按总量上限淘汰 %d 个"+
 			"（%d 字节），ttl=%s dir=%s", removed, freed, evicted, evictedBytes, s.ttl, s.dir)
 	}
 }
@@ -461,7 +467,7 @@ type diskFile struct {
 func (s *store) scan() []diskFile {
 	entries, err := fs.ReadDir(s.root.FS(), ".")
 	if err != nil {
-		log.Printf("[mcp] spill warning: 扫描落盘目录 %s 失败: %v", s.dir, err)
+		logf(s.log, slog.LevelWarn, "", "[mcp] spill: 扫描落盘目录 %s 失败: %v", s.dir, err)
 		return nil
 	}
 	out := make([]diskFile, 0, len(entries))
@@ -512,7 +518,7 @@ func (s *store) mine(id string, mod time.Time) bool {
 func (s *store) remove(f diskFile) bool {
 	if err := s.root.Remove(f.name); err != nil {
 		if !os.IsNotExist(err) {
-			log.Printf("[mcp] spill warning: 删除文件 %s 失败: %v", f.name, err)
+			logf(s.log, slog.LevelWarn, "", "[mcp] spill: 删除文件 %s 失败: %v", f.name, err)
 		}
 		return false
 	}
@@ -605,12 +611,13 @@ func (s *store) url(id string) string {
 		url := base + path + id
 		// 诊断：线上曾出现「启动日志是 /mcp/plugin/spill/，返回链接却是 /spill/」。
 		// 生产代码没有清空前缀的路径；每次拼 URL 都打出当前前缀，便于钉死根因。
-		log.Printf("[mcp] spill: URLFor path=%q prefix=%q url=%q",
+		// 每次落盘都会走到这里，所以是 Debug：排查时把宿主 Logger 的级别放到 Debug 即可。
+		logf(s.log, slog.LevelDebug, "", "[mcp] spill: URLFor path=%q prefix=%q url=%q",
 			path, strings.TrimSuffix(path, downloadPath), url)
 		return url
 	}
 	warnBaseOnce.Do(func() {
-		log.Printf("[mcp] spill warning: 对外地址 %q 不可用于下载（未配置 PublicBaseURL /"+
+		logf(s.log, slog.LevelWarn, "", "[mcp] spill: 对外地址 %q 不可用于下载（未配置 PublicBaseURL /"+
 			"SelfAddr，或其 host 是通配地址）：摘要里不会给下载 URL。多副本部署请把"+
 			"PublicBaseURL 配成 agent 可达的入口（域名/VIP 均可），把 SelfAddr 配成本副本可"+
 			"直连的 host:port（后者不要配 LB 地址，那样 id 无法区分副本）", base)
@@ -725,7 +732,7 @@ func (s *store) enforceTotal(newID string) error {
 		return fmt.Errorf("%w：落盘目录已用 %d 字节，上限 %d 字节（已淘汰 %d 个旧文件、"+
 			"释放 %d 字节仍不够）", errQuota, s.usage(), s.q.MaxTotalBytes, evicted, freed)
 	}
-	log.Printf("[mcp] spill: 为新文件腾出空间，按最旧优先淘汰 %d 个文件（%d 字节）",
+	logf(s.log, slog.LevelInfo, "", "[mcp] spill: 为新文件腾出空间，按最旧优先淘汰 %d 个文件（%d 字节）",
 		evicted, freed)
 	return nil
 }
@@ -900,7 +907,8 @@ func (s *store) downloadHandler() http.Handler {
 		case kindRaw:
 			hdr, off, err := readRawHeader(f)
 			if err != nil {
-				log.Printf("[mcp] spill warning: 无法读取 %s 的文件头，拒绝下载: %v", id, err)
+				logf(s.log, slog.LevelWarn, runtime.LogIDFromContext(r.Context()),
+					"[mcp] spill: 无法读取 %s 的文件头，拒绝下载: %v", id, err)
 				http.NotFound(w, r)
 				return
 			}

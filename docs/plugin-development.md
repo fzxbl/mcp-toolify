@@ -21,6 +21,7 @@ In-tree and external plugins use the same public interface; neither has extra pr
 | Method | Purpose |
 | --- | --- |
 | `Named` | Declares the plugin name; used by `required_plugins` checks and startup logs |
+| `Logger` | Returns the host-injected `runtime.Logger`; plugin operational logs must go through it rather than the standard `log` package |
 | `Config` | Decodes and claims the plugin's own TOML configuration section |
 | `Use` | Registers `func(next runtime.Handler) runtime.Handler` middleware |
 | `Tool` | Registers MCP tools supplied by the plugin |

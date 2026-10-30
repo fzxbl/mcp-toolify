@@ -61,7 +61,7 @@ dir = %q
 		t.Fatalf("Mount: %v", err)
 	}
 
-	st, err := newStore(dir, time.Hour, time.Hour, quota{})
+	st, err := newStore(dir, time.Hour, time.Hour, quota{}, nil)
 	if err != nil {
 		t.Fatalf("newStore: %v", err)
 	}

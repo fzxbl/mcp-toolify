@@ -21,14 +21,50 @@
 | `Match` | 注册期 label selector；为空或全空白表示不过滤，语法错误使启动失败。 |
 | `RequiredPlugins` | 必须安装的插件名；与配置文件顶层 `required_plugins` 取并集，缺失使启动失败。 |
 | `Peers` | 静态兄弟副本 `host:port` 白名单；也可用 `SetPeerProvider` 动态提供，后设置者覆盖先设置者。 |
+| `Logger` | 接收基座与插件的全部运维日志，带级别，请求路径上的日志带 `logid` 字段。`*slog.Logger` 直接可用，其它 logger 实现 `Log` 这一个方法即可。为 `nil` 时转给 `slog.Default()`（宿主没改过时即标准库 `log`）。见[日志](#日志)。 |
 
 `ConfigPath` 与至少一个 token 是启动前提；运行时没有关闭 token 鉴权的配置开关。
 完整字段示例见 [`config.example.toml`](../config.example.toml)。
 
+### 日志
+
+基座与内置插件不直接调用标准库 `log`，全部日志都经 `runtime.Logger` 输出：
+
+```go
+type Logger interface {
+	Log(ctx context.Context, level slog.Level, msg string, args ...any)
+}
+```
+
+签名与 `(*slog.Logger).Log` 一致，`*slog.Logger` 可以直接传入；zap、zerolog、logrus 用各自的 slog handler 包一层 `slog.New(h)`。其它 logger 实现这一个方法即可，例如 GoFrame 的 glog：
+
+```go
+type glogAdapter struct{ l *glog.Logger }
+
+func (a glogAdapter) Log(ctx context.Context, lvl slog.Level, msg string, args ...any) {
+	v := append([]any{msg}, args...)
+	switch {
+	case lvl >= slog.LevelError:
+		a.l.Error(ctx, v...)
+	case lvl >= slog.LevelWarn:
+		a.l.Warning(ctx, v...)
+	case lvl >= slog.LevelInfo:
+		a.l.Info(ctx, v...)
+	default:
+		a.l.Debug(ctx, v...)
+	}
+}
+
+r := toolify.New(toolify.Config{ConfigPath: "mcp.toml", Logger: glogAdapter{g.Log()}}, tools.RegisterAll)
+```
+
+约定：`msg` 是格式化好、可直接阅读的整句；`args` 是 slog 风格的 key/value，目前只带 `logid`（与 access log、审计事件对账的 join key）。级别：`Info` 是启动摘要与例行回收，`Warn` 是准入拒绝、`tools/list` 过滤与有风险的配置，`Error` 是审计丢事件、spill 落盘失败与 panic，`Debug` 是逐请求的诊断。插件经 `Registry.Logger()` 拿到同一个 Logger。
+
 ### 进程级状态
 
 以下状态由进程内共享，而不是按 `Registry` 实例隔离：挂载前缀（由 `Mount` 给出）、owner-routed
-工具声明、owner-routed 路径声明，以及 peer 白名单/provider。一个进程只应装配一套
+工具声明、owner-routed 路径声明、peer 白名单/provider，以及日志出口（`Config.Logger`，构造
+`Registry` 时设置）。一个进程只应装配一套
 彼此兼容的配置；需要不同前缀、owner 声明或 peer 集合时应拆分到不同进程。
 `Config.Peers`、`SetPeerProvider` 和 owner route 注册应在开始接收流量前完成。
 

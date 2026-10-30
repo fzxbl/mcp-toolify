@@ -314,7 +314,7 @@ func TestDownload404LeaksNoTopology(t *testing.T) {
 // TestCloseIsIdempotent：OnStop 钩子可能被调多次（Start 的两条退出路径都会跑），
 // 第二次不能 panic。
 func TestCloseIsIdempotent(t *testing.T) {
-	st, err := newStore(t.TempDir(), time.Hour, 10*time.Millisecond, quota{})
+	st, err := newStore(t.TempDir(), time.Hour, 10*time.Millisecond, quota{}, nil)
 	if err != nil {
 		t.Fatalf("newStore: %v", err)
 	}

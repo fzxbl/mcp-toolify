@@ -1,12 +1,15 @@
 package audit
 
 import (
+	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/fzxbl/mcp-toolify/runtime"
 )
 
 // 本文件是审计事件的**异步投递**实现：中间件在返回路径上只把事件塞进队列，
@@ -76,10 +79,14 @@ type dispatcher struct {
 
 	dropAlarm *throttledLogger
 	sinkAlarm *throttledLogger
+
+	// log 是宿主经 Registry.Logger 注入的日志出口。丢事件、落地失败这些告警不能走
+	// 审计自己的 Sink（说的正是 Sink 出了问题），只能走它。
+	log runtime.Logger
 }
 
 // newDispatcher 建投递器并起 worker。
-func newDispatcher(queueSize int, flushTimeout time.Duration) *dispatcher {
+func newDispatcher(queueSize int, flushTimeout time.Duration, l runtime.Logger) *dispatcher {
 	d := &dispatcher{
 		ch:           make(chan Event, queueSize),
 		quit:         make(chan struct{}),
@@ -87,6 +94,7 @@ func newDispatcher(queueSize int, flushTimeout time.Duration) *dispatcher {
 		flushTimeout: flushTimeout,
 		dropAlarm:    &throttledLogger{interval: alarmInterval},
 		sinkAlarm:    &throttledLogger{interval: alarmInterval},
+		log:          l,
 	}
 	go d.run()
 	return d
@@ -112,8 +120,8 @@ func (d *dispatcher) enqueue(e Event) {
 func (d *dispatcher) drop(e Event, why string) {
 	n := d.dropped.Add(1)
 	if ok, suppressed, total := d.dropAlarm.record(); ok {
-		log.Printf("[mcp] audit error: 审计事件被丢弃（%s）logid=%s method=%s tool=%s "+
-			"累计丢弃=%d%s", why, e.LogID, e.Method, e.Tool, n,
+		logf(d.log, slog.LevelError, e.LogID, "[mcp] audit: 审计事件被丢弃（%s）method=%s tool=%s "+
+			"累计丢弃=%d%s", why, e.Method, e.Tool, n,
 			suppressedNote(suppressed, total))
 	}
 }
@@ -159,7 +167,7 @@ func (d *dispatcher) dropRemaining(reason string) {
 		return
 	}
 	d.dropped.Add(n)
-	log.Printf("[mcp] audit error: 进程退出时有 %d 条审计事件未能落地（%s）", n, reason)
+	logf(d.log, slog.LevelError, "", "[mcp] audit: 进程退出时有 %d 条审计事件未能落地（%s）", n, reason)
 }
 
 // deliver 把事件交给全部 Sink。
@@ -172,8 +180,8 @@ func (d *dispatcher) deliver(e Event) {
 		// Install 期已经拦过「一个 Sink 都没注册」，走到这里说明宿主在接流之后把
 		// Sink 清掉了。仍然计成失败并告警，而不是当作成功。
 		if ok, suppressed, total := d.sinkAlarm.record(); ok {
-			log.Printf("[mcp] audit error: 没有任何落地函数，事件被丢弃 logid=%s%s",
-				e.LogID, suppressedNote(suppressed, total))
+			logf(d.log, slog.LevelError, e.LogID, "[mcp] audit: 没有任何落地函数，事件被丢弃%s",
+				suppressedNote(suppressed, total))
 		}
 		// 计数放最后（与下面失败/成功两条路一致）：观察方以计数当作「这条处理完了」
 		// 的信号，先加计数会让它在日志落笔之前就认为收尾。
@@ -182,11 +190,11 @@ func (d *dispatcher) deliver(e Event) {
 	}
 	bad := false
 	for i, fn := range fns {
-		if err := callSink(fn, e); err != nil {
+		if err := callSink(d.log, fn, e); err != nil {
 			bad = true
 			if ok, suppressed, total := d.sinkAlarm.record(); ok {
-				log.Printf("[mcp] audit error: 落地失败 sink[%d] logid=%s method=%s "+
-					"tool=%s: %v%s", i, e.LogID, e.Method, e.Tool, err,
+				logf(d.log, slog.LevelError, e.LogID, "[mcp] audit: 落地失败 sink[%d] method=%s "+
+					"tool=%s: %v%s", i, e.Method, e.Tool, err,
 					suppressedNote(suppressed, total))
 			}
 		}
@@ -210,10 +218,10 @@ func (d *dispatcher) stop() {
 	case <-d.done:
 	case <-time.After(d.flushTimeout + time.Second):
 		// worker 自己有排空预算，这里只是兜底：Sink 卡死时不能把进程停止流程挂住。
-		log.Printf("[mcp] audit error: %s", "审计 worker 未在预算内退出（某个落地函数卡住了？），不再等待")
+		logf(d.log, slog.LevelError, "", "%s", "[mcp] audit: 审计 worker 未在预算内退出（某个落地函数卡住了？），不再等待")
 	}
 	s := d.stats()
-	log.Printf("[mcp] audit: 投递收尾 enqueued=%d delivered=%d failed=%d dropped=%d",
+	logf(d.log, slog.LevelInfo, "", "[mcp] audit: 投递收尾 enqueued=%d delivered=%d failed=%d dropped=%d",
 		s.Enqueued, s.Delivered, s.Failed, s.Dropped)
 }
 
@@ -230,15 +238,30 @@ func (d *dispatcher) stats() Stats {
 // callSink 调用单个落地函数，把 panic 转成 error。
 //
 // 堆栈只写本地日志：panic 现场是定位落地函数 bug 的唯一线索。
-func callSink(fn Sink, e Event) (err error) {
+func callSink(l runtime.Logger, fn Sink, e Event) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			log.Printf("[mcp] audit error: 落地函数 panic logid=%s method=%s tool=%s: %v\n%s",
-				e.LogID, e.Method, e.Tool, p, debug.Stack())
+			logf(l, slog.LevelError, e.LogID, "[mcp] audit: 落地函数 panic method=%s tool=%s: %v\n%s",
+				e.Method, e.Tool, p, debug.Stack())
 			err = fmt.Errorf("panic: %v", p)
 		}
 	}()
 	return fn(e)
+}
+
+// logf 把一行运维日志交给宿主的 Logger；logID 非空时作为 "logid" 字段带上
+// （它是与宿主 access log、审计事件对账的 join key）。l 为 nil 时回退 slog.Default()：
+// 告警宁可打到默认出口，也不能因为没注入 Logger 而被静默吞掉。
+func logf(l runtime.Logger, level slog.Level, logID, format string, args ...any) {
+	if l == nil {
+		l = slog.Default()
+	}
+	msg := fmt.Sprintf(format, args...)
+	if logID != "" {
+		l.Log(context.Background(), level, msg, "logid", logID)
+		return
+	}
+	l.Log(context.Background(), level, msg)
 }
 
 // throttledLogger 是一个极小的日志限流器：同类事件的**第一条**立即打（状态变化沿），

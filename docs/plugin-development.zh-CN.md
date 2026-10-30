@@ -24,6 +24,7 @@ func Install(r *runtime.Registry) error
 | 方法 | 用途 |
 | --- | --- |
 | `Named` | 声明插件名；参与 `required_plugins` 检查和启动日志 |
+| `Logger` | 返回宿主注入的 `runtime.Logger`；插件的运维日志必须走它，不要直接用标准库 `log` |
 | `Config` | 解码并认领插件自己的 TOML 配置段 |
 | `Use` | 注册 `func(next runtime.Handler) runtime.Handler` 中间件 |
 | `Tool` | 注册插件自带的 MCP 工具 |

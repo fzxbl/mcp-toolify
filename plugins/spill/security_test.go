@@ -255,7 +255,7 @@ func TestNewStoreTightensExistingDir(t *testing.T) {
 	if err := os.Chmod(dir, 0o777); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
-	st, err := newStore(dir, time.Hour, time.Hour, quota{})
+	st, err := newStore(dir, time.Hour, time.Hour, quota{}, nil)
 	if err != nil {
 		t.Fatalf("newStore: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestNewStoreTightensExistingDir(t *testing.T) {
 func TestNewStoreCreatesPrivateDir(t *testing.T) {
 	base := t.TempDir()
 	dir := filepath.Join(base, "fresh")
-	st, err := newStore(dir, time.Hour, time.Hour, quota{})
+	st, err := newStore(dir, time.Hour, time.Hour, quota{}, nil)
 	if err != nil {
 		t.Fatalf("newStore: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestNewStoreCreatesPrivateDir(t *testing.T) {
 	if err := os.Symlink(dir, link); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
-	if st, err := newStore(link, time.Hour, time.Hour, quota{}); err == nil {
+	if st, err := newStore(link, time.Hour, time.Hour, quota{}, nil); err == nil {
 		st.close()
 		t.Error("落盘目录是符号链接时必须启动失败")
 	}
@@ -308,7 +308,7 @@ func TestPutStaysInPinnedDirAfterSwap(t *testing.T) {
 	withBaseURL(t, "http://127.0.0.1:18011")
 	parent := t.TempDir() // 扮演「攻击者拥有的父目录」，如可预测的 /tmp/mcp-toolify
 	dir := filepath.Join(parent, "spill")
-	st, err := newStore(dir, time.Hour, time.Hour, quota{})
+	st, err := newStore(dir, time.Hour, time.Hour, quota{}, nil)
 	if err != nil {
 		t.Fatalf("newStore: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestGCWarnsOnceOnDirSwap(t *testing.T) {
 	withBaseURL(t, "http://127.0.0.1:18011")
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "spill")
-	st, err := newStore(dir, time.Hour, time.Hour, quota{})
+	st, err := newStore(dir, time.Hour, time.Hour, quota{}, nil)
 	if err != nil {
 		t.Fatalf("newStore: %v", err)
 	}

@@ -31,9 +31,10 @@
 //     之前，`tools/call` 被它拒时直接返回，本插件根本不会被调用——越权尝试在审计流里
 //     是 0 条事件、HTTP 状态还是 200。同理 `tools/list` 的按 token 过滤发生在本插件
 //     记录**之后**，所以 Event.Result 里是过滤**前**的全量清单，不等于该 token 实际
-//     看到的那份。两者目前的唯一信号是基座打的 `[mcp] warning: 准入拒绝 …` /
-//     `tools/list 过滤 …` 日志（限流，见 runtime/tokenauthz.go）。做「谁看见/试过哪些
-//     工具」这类权限审计时，必须把那两条日志一并采集，不能只看审计流。
+//     看到的那份。两者目前的唯一信号是基座经 Config.Logger 打的两条 Warn 日志
+//     `[mcp] 准入拒绝 …` / `[mcp] tools/list 过滤 …`（限流、带 logid 字段，见
+//     runtime/tokenauthz.go）。做「谁看见/试过哪些工具」这类权限审计时，必须把那两条
+//     日志一并采集，不能只看审计流。
 //  7. Event.Meta 是 Call.Meta 的通用透传（拍平成字符串、键数与值长都有上限）。
 //     它是外置插件把自己的上下文送进审计流的唯一通道——本插件不认识任何具体插件，
 //     所以键名的含义由写入方负责，落地方按需过滤。
@@ -47,7 +48,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -321,7 +322,7 @@ func Install(r *runtime.Registry) error {
 	if err != nil {
 		return fmt.Errorf("[audit] 配置无效: %w", err)
 	}
-	d := newDispatcher(sec.QueueSize, sec.flush)
+	d := newDispatcher(sec.QueueSize, sec.flush, r.Logger())
 	current.Store(d)
 	// 「审计插件在场但一条也没落」是静默失效，而 required_plugins 只校验插件在场，
 	// 所以这里必须把「一个 sink 都没注册」判成启动失败。
@@ -337,7 +338,7 @@ func Install(r *runtime.Registry) error {
 		}
 		// 启动日志声明生效策略。打在 build 期而不是 Install 里，sinks 的条数才是真正
 		// 接流时的条数（Install 之后注册的 sink 也算进去）。
-		log.Printf("[mcp] audit: 异步投递（尽力而为，不阻塞返回）sinks=%d queue_size=%d "+
+		logf(r.Logger(), slog.LevelInfo, "", "[mcp] audit: 异步投递（尽力而为，不阻塞返回）sinks=%d queue_size=%d "+
 			"flush_timeout=%s max_args_bytes=%d max_result_bytes=%d headers=%v",
 			len(sinkList()), sec.QueueSize, sec.flush, sec.MaxArgsBytes,
 			sec.MaxResultBytes, sec.Headers)

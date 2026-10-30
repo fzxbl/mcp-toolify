@@ -43,7 +43,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -261,7 +261,7 @@ func Install(r *runtime.Registry) error {
 	if err != nil {
 		return fmt.Errorf("[spill] 配置无效: %w", err)
 	}
-	st, err := newStore(o.Dir, o.TTL, o.GCInterval, o.Quota)
+	st, err := newStore(o.Dir, o.TTL, o.GCInterval, o.Quota, r.Logger())
 	if err != nil {
 		return err
 	}
@@ -282,14 +282,14 @@ func Install(r *runtime.Registry) error {
 	// 启动日志声明生效策略：on_error 决定「落盘失败时这次调用还算不算成功」，
 	// 阈值/TTL/上限决定「什么会被落盘、能取回多久、最多占多少盘」，
 	// 最后一行声明下载端点的**实际路径**与公开下载语义。
-	log.Printf("[mcp] spill: on_error=%s threshold_bytes=%d(序列化后字节) ttl=%s gc_interval=%s "+
+	logf(st.log, slog.LevelInfo, "", "[mcp] spill: on_error=%s threshold_bytes=%d(序列化后字节) ttl=%s gc_interval=%s "+
 		"preview_bytes=%d max_file_mib=%d max_total_mib=%d dir=%s",
 		o.OnError, o.Threshold, o.TTL, o.GCInterval, o.PreviewBytes,
 		o.Quota.MaxFileBytes>>mibShift, o.Quota.MaxTotalBytes>>mibShift, o.Dir)
 	// 这行要回显下载端点的**实际路径**，所以打在 build 期钩子里：挂载前缀由宿主在
 	// Registry.Mount 里给出，那发生在 Install 之后；在 Install 里打会回显没加前缀的路径。
 	r.OnBuild(func() error {
-		log.Printf("[mcp] spill: 下载端点公开（不要求 Authorization），保护边界是不可猜测的 id；"+
+		logf(st.log, slog.LevelInfo, "", "[mcp] spill: 下载端点公开（不要求 Authorization），保护边界是不可猜测的 id；"+
 			"实际路径 %s", runtime.RoutePath(downloadPath))
 		return nil
 	})
@@ -317,7 +317,7 @@ func middleware(o options, st *store) runtime.Middleware {
 			}
 			id, written, perr := st.put(c.Tool, res.Tool, ownerOfSubject(c.Subject))
 			if perr != nil {
-				return onPutError(res, err, c, o, size, perr)
+				return onPutError(st.log, res, err, c, o, size, perr)
 			}
 			c.SetMeta(MetaID, id)
 			return rewrite(res.Tool, st, o, id, size, written), err
@@ -337,12 +337,27 @@ func spillable(res *runtime.Result, err error) bool {
 	return err == nil && res != nil && res.Tool != nil
 }
 
+// logf 把一行运维日志交给宿主的 Logger；logID 非空时作为 "logid" 字段带上。
+// l 为 nil 时回退 slog.Default()：告警宁可打到默认出口，也不能被静默吞掉。
+// 与 plugins/audit 里的同名函数是有意的重复（插件之间不互相 import）。
+func logf(l runtime.Logger, level slog.Level, logID, format string, args ...any) {
+	if l == nil {
+		l = slog.Default()
+	}
+	msg := fmt.Sprintf(format, args...)
+	if logID != "" {
+		l.Log(context.Background(), level, msg, "logid", logID)
+		return
+	}
+	l.Log(context.Background(), level, msg)
+}
+
 // onPutError 按 on_error 策略处置落盘失败。两条路径都必然留日志——
 // 「静默把超大结果原样返回」是本插件唯一不能做的事。
-func onPutError(res *runtime.Result, err error, c *runtime.Call, o options,
+func onPutError(l runtime.Logger, res *runtime.Result, err error, c *runtime.Call, o options,
 	size int, perr error) (*runtime.Result, error) {
-	log.Printf("[mcp] spill error: 落盘失败 on_error=%s logid=%s tool=%s size=%d: %v",
-		o.OnError, c.LogID, c.Tool, size, perr)
+	logf(l, slog.LevelError, c.LogID, "[mcp] spill: 落盘失败 on_error=%s tool=%s size=%d: %v",
+		o.OnError, c.Tool, size, perr)
 	if o.OnError == OnErrorDeny {
 		// fail-closed：工具已经执行完了（落盘发生在返回路径），所以文案要劝退重试——
 		// 目标工具集里可能有删除、覆盖写这类不可逆动作。

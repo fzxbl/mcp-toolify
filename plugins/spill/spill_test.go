@@ -19,7 +19,7 @@ import (
 // newTestStore 造一个临时目录上的 store，用例结束时停 GC。
 func newTestStore(t *testing.T, ttl, gcEvery time.Duration) *store {
 	t.Helper()
-	st, err := newStore(t.TempDir(), ttl, gcEvery, quota{})
+	st, err := newStore(t.TempDir(), ttl, gcEvery, quota{}, nil)
 	if err != nil {
 		t.Fatalf("newStore: %v", err)
 	}

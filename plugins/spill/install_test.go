@@ -136,7 +136,7 @@ dir = "`+strings.ReplaceAll(dir, `\`, `\\`)+`"
 	if !ok {
 		t.Fatalf("插件没有注册 %s 路由: %v", downloadPath, routes)
 	}
-	st, err := newStore(dir, time.Hour, time.Hour, quota{})
+	st, err := newStore(dir, time.Hour, time.Hour, quota{}, nil)
 	if err != nil {
 		t.Fatalf("newStore: %v", err)
 	}
