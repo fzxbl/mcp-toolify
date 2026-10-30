@@ -610,11 +610,23 @@ func visibleToolNames(tools []*mcp.Tool, max int) ([]string, bool) {
 	return names, false
 }
 
+// invalidUTF8Len 是 encoding/json 把一个非法 UTF-8 字节替换成 U+FFFD 后输出的字节数。
+// 这个值随工具链变化，不能写死：旧实现输出转义形式 \ufffd（6 字节），Go 1.27 起
+// 默认启用的 GOEXPERIMENT=jsonv2 改为输出裸的 U+FFFD（3 字节）。启动时探测一次，
+// 估算就始终与当前编译产物的实际输出一致。
+var invalidUTF8Len = func() int {
+	b, err := json.Marshal("\xff")
+	if err != nil {
+		return len(`\ufffd`) // 不会发生；按较大值兜底，宁可高估
+	}
+	return len(b) - len(`""`)
+}()
+
 // jsonStringLen 返回 s 被 encoding/json 编码成 JSON 字符串后的字节数（含两个引号）。
 //
 // 逐字节算而不是 marshal 一遍：后者在几千个工具名的场景下就是几千次小分配。
 // 覆盖 encoding/json 默认会做的全部转义：" \ 与控制字符、HTML 转义（< > &）、
-// 行分隔符 U+2028/U+2029，以及非法字节被替换成 \ufffd（转义形式，6 字节）。
+// 行分隔符 U+2028/U+2029，以及非法字节被替换成 U+FFFD（字节数见 invalidUTF8Len）。
 func jsonStringLen(s string) int {
 	n := len(`""`)
 	for i := 0; i < len(s); {
@@ -633,7 +645,7 @@ func jsonStringLen(s string) int {
 		r, size := utf8.DecodeRuneInString(s[i:])
 		switch {
 		case r == utf8.RuneError && size == 1:
-			n += 6 // 非法字节 -> \ufffd（encoding/json 输出的是转义形式，不是裸的 3 字节）
+			n += invalidUTF8Len // 非法字节 -> U+FFFD，转义与否取决于工具链
 		case r == '\u2028' || r == '\u2029':
 			n += 6
 		default:

@@ -613,13 +613,26 @@ func isNilField(v any) bool {
 // 输出，膨胀 4/3 —— 按原始字节数判定阈值会漏掉这部分。
 func base64Len(n int) int { return base64.StdEncoding.EncodedLen(n) + len(`""`) }
 
+// invalidUTF8Len 是 encoding/json 把一个非法 UTF-8 字节替换成 U+FFFD 后输出的字节数。
+// 这个值随工具链变化，不能写死：旧实现输出转义形式 \ufffd（6 字节），Go 1.27 起
+// 默认启用的 GOEXPERIMENT=jsonv2 改为输出裸的 U+FFFD（3 字节）。启动时探测一次，
+// 估算就始终与当前编译产物的实际输出一致。
+var invalidUTF8Len = func() int {
+	b, err := json.Marshal("\xff")
+	if err != nil {
+		return len(`\ufffd`) // 不会发生；按较大值兜底，宁可高估
+	}
+	return len(b) - len(`""`)
+}()
+
 // jsonStringLen 返回 s 被 encoding/json 编码成 JSON 字符串后的字节数（含两个引号）。
 //
 // 逐字节算而不是 marshal 一遍：本函数用在阈值判定的热路径上，几十兆文本 marshal 一次
 // 就是一次完整的内存副本，而我们只要长度。
 // 覆盖 encoding/json 默认会做的全部转义：" \ 与控制字符、HTML 转义（< > &）、
-// 行分隔符 U+2028/U+2029，以及非法字节被替换成 \ufffd（**转义形式，6 字节**，
-// 不是裸的 3 字节 —— audit 插件在这里踩过一次）。
+// 行分隔符 U+2028/U+2029，以及非法字节被替换成 U+FFFD。后者的字节数**随工具链变化**
+// （转义形式 6 字节 / 裸 3 字节），写死任何一个都会在另一种工具链上估错——写死 3 在
+// 旧工具链上就是低估、即 fail-open。所以取启动时探测的 invalidUTF8Len。
 //
 // 与 plugins/audit 里的同名函数是有意的重复实现：插件之间不互相 import
 // （装一个插件不该把另一个拖进编译产物），这点重复换来的是插件间零耦合。
@@ -641,7 +654,7 @@ func jsonStringLen(s string) int {
 		r, size := utf8.DecodeRuneInString(s[i:])
 		switch {
 		case r == utf8.RuneError && size == 1:
-			n += 6 // 非法字节 -> \ufffd（转义形式）
+			n += invalidUTF8Len // 非法字节 -> U+FFFD，转义与否取决于工具链
 		case r == '\u2028' || r == '\u2029':
 			n += 6
 		default:

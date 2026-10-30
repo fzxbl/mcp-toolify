@@ -13,8 +13,9 @@ import (
 )
 
 // jsonStringCases 覆盖 encoding/json 的全部转义分支：控制字符、引号反斜杠、
-// HTML 转义（< > &）、行分隔符 U+2028/U+2029、非法 UTF-8（被输出成 \ufffd 转义形式
-// 的 6 字节，不是裸的 3 字节）、多字节字符。
+// HTML 转义（< > &）、行分隔符 U+2028/U+2029、非法 UTF-8（替换成 U+FFFD，转义形式
+// 6 字节还是裸的 3 字节取决于工具链，见 invalidUTF8Len）、多字节字符。
+// 想覆盖两种形态时分别用默认工具链与 GOEXPERIMENT=nojsonv2 各跑一次。
 var jsonStringCases = []string{
 	"", "abc", `he said "hi"`, `back\slash`, "tab\there", "nl\nrn\r",
 	"\x00\x01\x1f", "<script>&</script>", "\u2028\u2029", "中文测试",
