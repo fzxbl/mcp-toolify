@@ -34,6 +34,7 @@ type Candidate struct {
 	Pkg         string // 包导入路径
 	PkgName     string // 包名（用于命名 + import alias）
 	Name        string // 函数名
+	HasCtx      bool   // 首位参数为 context.Context：调用时传入请求 ctx，不进入 Params
 	Recv        string // 方法接收者类型名（去掉 *，值/指针接收者都填；空表示包级函数）
 	Pos         string // 声明位置 file:line，供生成期报错使用
 	Description string // 第一句 godoc
@@ -153,6 +154,10 @@ func buildCandidate(pkg *packages.Package, fn *ast.FuncDecl) (Candidate, error) 
 	}
 	for i := 0; i < sig.Params().Len(); i++ {
 		p := sig.Params().At(i)
+		if i == 0 && isContextType(p.Type()) {
+			cand.HasCtx = true
+			continue
+		}
 		param := Param{
 			Name: p.Name(),
 			Type: p.Type(),

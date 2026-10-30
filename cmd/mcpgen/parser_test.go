@@ -239,3 +239,26 @@ func TestParseCandidates_RejectedSignatures(t *testing.T) {
 		}
 	}
 }
+
+func TestParseCandidates_Ctx(t *testing.T) {
+	cands, err := parseCandidates("./testdata/case_ctx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 4 {
+		t.Fatalf("want 4 candidates, got %d", len(cands))
+	}
+	for _, c := range cands {
+		if !c.HasCtx {
+			t.Errorf("%s: HasCtx = false", c.Name)
+		}
+		for _, p := range c.Params {
+			if isContextType(p.Type) {
+				t.Errorf("%s: ctx 不应进入 Params", c.Name)
+			}
+		}
+	}
+	if len(cands[0].Params) != 1 || cands[0].Params[0].Name != "id" {
+		t.Errorf("Lookup params = %+v", cands[0].Params)
+	}
+}

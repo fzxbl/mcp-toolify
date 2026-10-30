@@ -38,11 +38,11 @@ func validateSignature(fn *ast.FuncDecl, sig *types.Signature) error {
 	seen := map[string]string{} // 归一化后的名字 -> 原参数名
 	for i := 0; i < sig.Params().Len(); i++ {
 		p := sig.Params().At(i)
+		if i == 0 && isContextType(p.Type()) {
+			continue // 首位 ctx 按位置传入，允许无名或 _，不会成为 JSON 字段
+		}
 		if p.Name() == "" || p.Name() == "_" {
 			return fmt.Errorf("unnamed parameter #%d in %s: 参数必须有名字（不能省略或写成 _），因为名字就是 JSON 字段名", i+1, fn.Name.Name)
-		}
-		if i == 0 && isContextType(p.Type()) {
-			continue // 首位 ctx 由运行时注入，不进入 input 结构体
 		}
 		if isContextType(p.Type()) {
 			return fmt.Errorf("context.Context must be the first parameter (参数 %q 位于第 %d 位): 请把 ctx 挪到第一个参数", p.Name(), i+1)

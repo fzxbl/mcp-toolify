@@ -109,7 +109,7 @@ func buildToolData(c Candidate, srcPkgPath string, imps map[string]struct{}) (to
 	td.DescriptionLit = strconv.Quote(normalizeDesc(c.Description, c.Detail))
 	td.LabelsLit = labelsLit(c.Labels)
 
-	var callArgs []string
+	callArgs := ctxArgs(c)
 	for _, p := range c.Params {
 		// 绑定到具体类型的参数（接口入参等）：input 字段类型用 mcp:bind 指定的具体类型，
 		// 调用时直接把该值传给原（可能是接口的）形参。绑定类型所在的外部包由 mcp:import 声明。
@@ -230,9 +230,17 @@ func (td *toolData) buildMultiReturn(c Candidate) {
 	td.CallExpr = fmt.Sprintf("%s := src.%s(%s)", strings.Join(lhs, ", "), callExpr(c), strings.Join(callArgsOf(c), ", "))
 }
 
+// ctxArgs 返回调用实参的前缀：首位为 context.Context 的工具先传入请求 ctx。
+func ctxArgs(c Candidate) []string {
+	if c.HasCtx {
+		return []string{"ctx"}
+	}
+	return nil
+}
+
 // callArgsOf 重建调用实参列表（与 buildToolData 中保持一致）。
 func callArgsOf(c Candidate) []string {
-	var args []string
+	args := ctxArgs(c)
 	for _, p := range c.Params {
 		args = append(args, "in."+exportName(p.Name))
 	}

@@ -170,3 +170,30 @@ func TestRender_FunctionOnlyOutputUnchanged(t *testing.T) {
 		}
 	}
 }
+
+func TestRender_Ctx(t *testing.T) {
+	tmp := t.TempDir()
+	cands, err := parseCandidates("./testdata/case_ctx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := renderPackage(tmp, cands); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := filepath.Glob(filepath.Join(tmp, "*_gen.go"))
+	data, _ := os.ReadFile(files[0])
+	out := string(data)
+	for _, want := range []string{
+		"src.Lookup(ctx, in.Id)",
+		"src.Ping(ctx)",
+		"src.Pair(ctx, in.X)",
+		"src.Blank(ctx, in.Y)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Ctx ") {
+		t.Errorf("input 结构体不应含 Ctx 字段:\n%s", out)
+	}
+}
