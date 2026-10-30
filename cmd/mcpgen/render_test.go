@@ -267,6 +267,7 @@ func TestRenderAll_Impls(t *testing.T) {
 		"Case_method_Orders *src_case_method.Orders",
 		"func NewRegistrar(impls Impls) (runtime.Registrar, error)",
 		"tools.Impls.Case_method_Orders 为 nil：工具 case_method.get, case_method.orders_list 需要它",
+		`errors.New("tools.Impls.Case_method_Users 为 nil：工具 case_method.users_list%v 需要它")`,
 		"Register_Case_simple(s, opts)",
 		"Register_Case_method(s, opts, impls.Case_method_Counter, impls.Case_method_Orders, impls.Case_method_Users)",
 	} {

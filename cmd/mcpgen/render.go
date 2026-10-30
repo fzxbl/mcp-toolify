@@ -427,7 +427,7 @@ func newPkgInfo(cands []Candidate) pkgInfo {
 
 type implField struct {
 	Name, Alias, Type string
-	Tools             string // 依赖该实例的工具名，", " 分隔
+	Msg               string // nil 报错文案的 Go 字符串字面量（strconv.Quote，不当作格式串）
 }
 
 type implPkg struct {
@@ -467,7 +467,7 @@ func renderAll(outDir string, pkgs []pkgInfo) error {
 					name := p.Ident + "_" + r
 					d.Fields = append(d.Fields, implField{
 						Name: name, Type: "*" + alias + "." + r,
-						Tools: strings.Join(p.RecvTools[r], ", "),
+						Msg: strconv.Quote("tools.Impls." + name + " 为 nil：工具 " + strings.Join(p.RecvTools[r], ", ") + " 需要它"),
 					})
 					ip.Args += ", impls." + name
 				}

@@ -7,19 +7,8 @@ import (
 	"testing"
 )
 
-// buildGenerated 渲染各源包与 all_gen.go 并 go build，返回输出目录。
+// buildGenerated 渲染各源包与 all_gen.go，go build + go vet，返回输出目录。
 func buildGenerated(t *testing.T, pkgDirs ...string) string {
-	t.Helper()
-	return buildGeneratedImpl(t, true, pkgDirs)
-}
-
-// buildGeneratedPkgOnly 与 buildGenerated 相同，但不生成 all_gen.go。
-func buildGeneratedPkgOnly(t *testing.T, pkgDirs ...string) string {
-	t.Helper()
-	return buildGeneratedImpl(t, false, pkgDirs)
-}
-
-func buildGeneratedImpl(t *testing.T, withAll bool, pkgDirs []string) string {
 	t.Helper()
 	outDir, err := os.MkdirTemp("testdata", "zzgen_*")
 	if err != nil {
@@ -41,12 +30,16 @@ func buildGeneratedImpl(t *testing.T, withAll bool, pkgDirs []string) string {
 		}
 		pkgs = append(pkgs, newPkgInfo(cands))
 	}
-	if withAll {
-		if err := renderAll(outDir, pkgs); err != nil {
-			t.Fatalf("renderAll: %v", err)
+	if err := renderAll(outDir, pkgs); err != nil {
+		t.Fatalf("renderAll: %v", err)
+	}
+	var out []byte
+	for _, sub := range []string{"build", "vet"} {
+		out, err = exec.Command("go", sub, "./"+filepath.ToSlash(outDir)).CombinedOutput()
+		if err != nil {
+			break
 		}
 	}
-	out, err := exec.Command("go", "build", "./"+filepath.ToSlash(outDir)).CombinedOutput()
 	if err != nil {
 		var files string
 		matches, _ := filepath.Glob(filepath.Join(outDir, "*.go"))

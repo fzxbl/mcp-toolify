@@ -4,7 +4,7 @@ package tools
 
 import (
 {{- if .HasImpls }}
-	"fmt"
+	"errors"
 
 {{ end }}
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -26,7 +26,7 @@ type Impls struct {
 func NewRegistrar(impls Impls) (runtime.Registrar, error) {
 {{- range .Fields }}
 	if impls.{{ .Name }} == nil {
-		return nil, fmt.Errorf("tools.Impls.{{ .Name }} 为 nil：工具 {{ .Tools }} 需要它")
+		return nil, errors.New({{ .Msg }})
 	}
 {{- end }}
 	return func(s *mcp.Server, opts runtime.RegisterOptions) {

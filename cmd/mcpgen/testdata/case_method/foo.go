@@ -28,7 +28,7 @@ type Users struct{}
 // List 列出用户。
 //
 // mcp:tool
-// mcp:name=case_method.users_list
+// mcp:name=case_method.users_list%v
 func (u Users) List(ctx context.Context) []string {
 	_ = ctx
 	return nil
