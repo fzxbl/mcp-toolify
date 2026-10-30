@@ -208,3 +208,34 @@ func TestParseCandidates_UnknownMarkers(t *testing.T) {
 		}
 	}
 }
+
+// TestParseCandidates_RejectedSignatures 会生成出无法编译或语义错误代码的签名，
+// 必须在生成期就报错，并带上 file:line。
+func TestParseCandidates_RejectedSignatures(t *testing.T) {
+	cases := []struct {
+		dir      string
+		wantPart string
+	}{
+		{"./testdata/case_bad_unexported", "unexported function"},
+		{"./testdata/case_bad_generic", "generic function"},
+		{"./testdata/case_bad_variadic", "variadic parameter"},
+		{"./testdata/case_bad_unnamed", "unnamed parameter"},
+		{"./testdata/case_bad_collision", "parameter name collision"},
+		{"./testdata/case_bad_ctx_pos", "context.Context must be the first parameter"},
+		{"./testdata/case_bad_recv_unexported", "unexported receiver type"},
+		{"./testdata/case_bad_recv_generic", "generic receiver type"},
+	}
+	for _, c := range cases {
+		_, err := parseCandidates(c.dir)
+		if err == nil {
+			t.Errorf("%s: want error, got nil", c.dir)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.wantPart) {
+			t.Errorf("%s: error = %v, want to contain %q", c.dir, err, c.wantPart)
+		}
+		if !strings.Contains(err.Error(), "foo.go:") {
+			t.Errorf("%s: error should carry file:line, got %v", c.dir, err)
+		}
+	}
+}

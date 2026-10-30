@@ -34,7 +34,8 @@ type Candidate struct {
 	Pkg         string // 包导入路径
 	PkgName     string // 包名（用于命名 + import alias）
 	Name        string // 函数名
-	Recv        string // 方法接收者类型名（空表示包级函数）
+	Recv        string // 方法接收者类型名（去掉 *，值/指针接收者都填；空表示包级函数）
+	Pos         string // 声明位置 file:line，供生成期报错使用
 	Description string // 第一句 godoc
 	Detail      string // 余下 godoc 正文
 	Params      []Param
@@ -79,6 +80,7 @@ func parseCandidates(pkgPath string) ([]Candidate, error) {
 					return nil, fmt.Errorf("%s.%s (%s): %w",
 						pkg.PkgPath, fn.Name.Name, pkg.Fset.Position(fn.Pos()), err)
 				}
+				cand.Pos = pkg.Fset.Position(fn.Pos()).String()
 				out = append(out, cand)
 			}
 		}
@@ -105,12 +107,6 @@ func buildCandidate(pkg *packages.Package, fn *ast.FuncDecl) (Candidate, error) 
 		PkgName: pkg.Name,
 		Name:    fn.Name.Name,
 	}
-	if fn.Recv != nil && len(fn.Recv.List) == 1 {
-		if id, ok := fn.Recv.List[0].Type.(*ast.Ident); ok {
-			cand.Recv = id.Name
-		}
-	}
-
 	// 解析注释
 	desc, detail, paramDocs, markers := parseDoc(fn.Doc)
 	// 去掉 godoc 约定的函数名前缀
@@ -142,6 +138,19 @@ func buildCandidate(pkg *packages.Package, fn *ast.FuncDecl) (Candidate, error) 
 
 	// 类型信息
 	sig := pkg.TypesInfo.Defs[fn.Name].Type().(*types.Signature)
+	if err := validateSignature(fn, sig); err != nil {
+		return cand, err
+	}
+	// 接收者类型名取自类型信息（AST 路径认不出 *T）；值/指针接收者都填。
+	if recv := sig.Recv(); recv != nil {
+		t := types.Unalias(recv.Type())
+		if p, ok := t.(*types.Pointer); ok {
+			t = types.Unalias(p.Elem())
+		}
+		if n, ok := t.(*types.Named); ok {
+			cand.Recv = n.Obj().Name()
+		}
+	}
 	for i := 0; i < sig.Params().Len(); i++ {
 		p := sig.Params().At(i)
 		param := Param{

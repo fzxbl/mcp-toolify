@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"go/format"
 	"os"
 	"path/filepath"
@@ -135,5 +136,37 @@ func TestLabelsLit(t *testing.T) {
 	src := "package p\n\nvar x = " + lit + "\n"
 	if _, err := format.Source([]byte(src)); err != nil {
 		t.Errorf("labelsLit output is not valid Go: %v\n%s", err, src)
+	}
+}
+
+// TestRender_FunctionOnlyOutputUnchanged 只有包级函数的包，生成产物必须与
+// 改动前逐字节一致（golden 由 ctx/方法支持之前的生成器产出）。
+func TestRender_FunctionOnlyOutputUnchanged(t *testing.T) {
+	tmp := t.TempDir()
+	cands, err := parseCandidates("./testdata/case_simple")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := renderPackage(tmp, cands); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if err := renderAll(tmp, []string{"Case_simple"}); err != nil {
+		t.Fatalf("renderAll: %v", err)
+	}
+	for gen, golden := range map[string]string{
+		"case_simple_gen.go": "case_simple_gen.go.golden",
+		"all_gen.go":         "all_gen.go.golden",
+	} {
+		got, err := os.ReadFile(filepath.Join(tmp, gen))
+		if err != nil {
+			t.Fatalf("read %s: %v", gen, err)
+		}
+		want, err := os.ReadFile(filepath.Join("testdata", "golden", golden))
+		if err != nil {
+			t.Fatalf("read golden %s: %v", golden, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("%s 与 golden 不一致（函数-only 输出必须逐字节不变）\n--- got ---\n%s\n--- want ---\n%s", gen, got, want)
+		}
 	}
 }
