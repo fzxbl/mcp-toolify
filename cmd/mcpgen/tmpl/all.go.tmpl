@@ -3,12 +3,42 @@
 package tools
 
 import (
+{{- if .HasImpls }}
+	"fmt"
+
+{{ end }}
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/fzxbl/mcp-toolify/runtime"
+{{- range .Imports }}
+	{{ .Alias }} "{{ .Path }}"
+{{- end }}
 )
 
+{{ if .HasImpls -}}
+// Impls 聚合方法工具所需的接收者实例，字段名为 <包标识>_<类型名>。
+type Impls struct {
+{{- range .Fields }}
+	{{ .Name }} {{ .Type }}
+{{- end }}
+}
+
+// NewRegistrar 校验全部实例非 nil（与 opts 过滤无关）后返回 Registrar。
+func NewRegistrar(impls Impls) (runtime.Registrar, error) {
+{{- range .Fields }}
+	if impls.{{ .Name }} == nil {
+		return nil, fmt.Errorf("tools.Impls.{{ .Name }} 为 nil：工具 {{ .Tools }} 需要它")
+	}
+{{- end }}
+	return func(s *mcp.Server, opts runtime.RegisterOptions) {
+{{- range .ImplPkgs }}
+		Register_{{ .Ident }}(s, opts{{ .Args }})
+{{- end }}
+	}, nil
+}
+{{- else -}}
 func RegisterAll(s *mcp.Server, opts runtime.RegisterOptions) {
 {{- range .Packages }}
 	Register_{{ . }}(s, opts)
 {{- end }}
 }
+{{- end }}

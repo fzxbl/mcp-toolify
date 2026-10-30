@@ -407,13 +407,76 @@ func typeExpr(t types.Type, srcPkgPath string, imps map[string]struct{}) string 
 	})
 }
 
-func renderAll(outDir string, pkgIdents []string) error {
+// pkgInfo 是 all_gen.go 渲染所需的单个源包信息。
+type pkgInfo struct {
+	Ident, PkgPath, PkgName string
+	Recvs                   []string            // 方法工具用到的接收者类型名（已排序）
+	RecvTools               map[string][]string // 接收者 -> 依赖它的工具名（源码顺序）
+}
+
+// newPkgInfo 由一个包的候选工具构造 pkgInfo。
+func newPkgInfo(cands []Candidate) pkgInfo {
+	return pkgInfo{
+		Ident:     exportName(cands[0].PkgName),
+		PkgPath:   cands[0].Pkg,
+		PkgName:   cands[0].PkgName,
+		Recvs:     packageRecvs(cands),
+		RecvTools: recvTools(cands),
+	}
+}
+
+type implField struct {
+	Name, Alias, Type string
+	Tools             string // 依赖该实例的工具名，", " 分隔
+}
+
+type implPkg struct {
+	Ident string
+	Args  string // 追加在 (s, opts 之后的实参，形如 ", impls.X_Y"
+}
+
+type allData struct {
+	Packages []string // 函数-only 模式：包标识
+	HasImpls bool
+	Imports  []struct{ Alias, Path string }
+	Fields   []implField
+	ImplPkgs []implPkg
+}
+
+// renderAll 渲染 all_gen.go：任一包含方法工具则生成 Impls + NewRegistrar，
+// 否则生成 RegisterAll（与旧输出逐字节一致）。
+func renderAll(outDir string, pkgs []pkgInfo) error {
 	tmpl, err := template.ParseFS(tmplFS, "tmpl/all.go.tmpl")
 	if err != nil {
 		return err
 	}
+	var d allData
+	for _, p := range pkgs {
+		d.Packages = append(d.Packages, p.Ident)
+		if len(p.Recvs) > 0 {
+			d.HasImpls = true
+		}
+	}
+	if d.HasImpls {
+		for _, p := range pkgs {
+			ip := implPkg{Ident: p.Ident}
+			if len(p.Recvs) > 0 {
+				alias := "src_" + p.PkgName // 避免与 fmt/runtime/mcp 等冲突
+				d.Imports = append(d.Imports, struct{ Alias, Path string }{alias, p.PkgPath})
+				for _, r := range p.Recvs {
+					name := p.Ident + "_" + r
+					d.Fields = append(d.Fields, implField{
+						Name: name, Type: "*" + alias + "." + r,
+						Tools: strings.Join(p.RecvTools[r], ", "),
+					})
+					ip.Args += ", impls." + name
+				}
+			}
+			d.ImplPkgs = append(d.ImplPkgs, ip)
+		}
+	}
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, struct{ Packages []string }{pkgIdents}); err != nil {
+	if err := tmpl.Execute(&buf, d); err != nil {
 		return err
 	}
 	formatted, err := format.Source(buf.Bytes())

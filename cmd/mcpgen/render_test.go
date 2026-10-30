@@ -150,7 +150,7 @@ func TestRender_FunctionOnlyOutputUnchanged(t *testing.T) {
 	if err := renderPackage(tmp, cands); err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	if err := renderAll(tmp, []string{"Case_simple"}); err != nil {
+	if err := renderAll(tmp, []pkgInfo{newPkgInfo(cands)}); err != nil {
 		t.Fatalf("renderAll: %v", err)
 	}
 	for gen, golden := range map[string]string{
@@ -241,5 +241,40 @@ func TestPackageRecvs(t *testing.T) {
 	}
 	if _, ok := rt[""]; ok {
 		t.Errorf("recvTools 不应包含包级函数")
+	}
+}
+
+func TestRenderAll_Impls(t *testing.T) {
+	var pkgs []pkgInfo
+	for _, d := range []string{"./testdata/case_simple", "./testdata/case_method"} {
+		cands, err := parseCandidates(d)
+		if err != nil {
+			t.Fatalf("parse %s: %v", d, err)
+		}
+		pkgs = append(pkgs, newPkgInfo(cands))
+	}
+	tmp := t.TempDir()
+	if err := renderAll(tmp, pkgs); err != nil {
+		t.Fatalf("renderAll: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(tmp, "all_gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// gofmt 会对齐字段，先折叠空白再断言。
+	got := strings.Join(strings.Fields(string(b)), " ")
+	for _, want := range []string{
+		"Case_method_Orders *src_case_method.Orders",
+		"func NewRegistrar(impls Impls) (runtime.Registrar, error)",
+		"tools.Impls.Case_method_Orders 为 nil：工具 case_method.get, case_method.orders_list 需要它",
+		"Register_Case_simple(s, opts)",
+		"Register_Case_method(s, opts, impls.Case_method_Counter, impls.Case_method_Orders, impls.Case_method_Users)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("all_gen.go 缺少 %q\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "func RegisterAll") {
+		t.Errorf("含方法工具时不应生成 RegisterAll\n%s", got)
 	}
 }

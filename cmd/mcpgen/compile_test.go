@@ -27,7 +27,7 @@ func buildGeneratedImpl(t *testing.T, withAll bool, pkgDirs []string) string {
 	}
 	t.Cleanup(func() { os.RemoveAll(outDir) })
 
-	var idents []string
+	var pkgs []pkgInfo
 	for _, dir := range pkgDirs {
 		cands, err := parseCandidates(dir)
 		if err != nil {
@@ -39,10 +39,10 @@ func buildGeneratedImpl(t *testing.T, withAll bool, pkgDirs []string) string {
 		if err := renderPackage(outDir, cands); err != nil {
 			t.Fatalf("render %s: %v", dir, err)
 		}
-		idents = append(idents, exportName(cands[0].PkgName))
+		pkgs = append(pkgs, newPkgInfo(cands))
 	}
 	if withAll {
-		if err := renderAll(outDir, idents); err != nil {
+		if err := renderAll(outDir, pkgs); err != nil {
 			t.Fatalf("renderAll: %v", err)
 		}
 	}
@@ -63,7 +63,10 @@ func TestCompile_Ctx(t *testing.T) {
 	buildGenerated(t, "./testdata/case_ctx")
 }
 
-// 只生成包文件：Task 5 之前 all_gen.go 仍按旧签名调用 Register_<Pkg>(s, opts)。
 func TestCompile_Method(t *testing.T) {
-	buildGeneratedPkgOnly(t, "./testdata/case_method")
+	buildGenerated(t, "./testdata/case_method")
+}
+
+func TestCompile_Aggregate(t *testing.T) {
+	buildGenerated(t, "./testdata/case_simple", "./testdata/case_method")
 }

@@ -40,13 +40,13 @@ func main() {
 	}
 	check(checkUnique(all))
 
-	var pkgIdents []string
+	var pkgs []pkgInfo
 	for _, cands := range all {
 		check(renderPackage(outDir, cands))
-		pkgIdents = append(pkgIdents, exportName(cands[0].PkgName))
+		pkgs = append(pkgs, newPkgInfo(cands))
 	}
-	check(renderAll(outDir, pkgIdents))
-	fmt.Printf("generated %d packages into %s\n", len(pkgIdents), outDir)
+	check(renderAll(outDir, pkgs))
+	fmt.Printf("generated %d packages into %s\n", len(pkgs), outDir)
 }
 
 func check(err error) {
