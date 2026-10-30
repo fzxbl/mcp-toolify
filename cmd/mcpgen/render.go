@@ -94,6 +94,15 @@ func renderPackage(outDir string, cands []Candidate) error {
 	return os.WriteFile(out, formatted, 0o644)
 }
 
+// toolNameOf 返回候选的最终工具名：mcp:name 优先，否则 <包名>.<snake_case(函数名)>。
+// 重复检查与代码生成共用它，保证两者不会不一致。
+func toolNameOf(c Candidate) string {
+	if c.ToolName != "" {
+		return c.ToolName
+	}
+	return c.PkgName + "." + snakeCase(c.Name)
+}
+
 func buildToolData(c Candidate, srcPkgPath string, imps map[string]struct{}) (toolData, error) {
 	td := toolData{
 		HandlerName: "handle_" + c.PkgName + "_" + c.Name,
@@ -101,11 +110,7 @@ func buildToolData(c Candidate, srcPkgPath string, imps map[string]struct{}) (to
 		// 与 users.Get），故 input 结构体名带上包名前缀避免重复声明。
 		InputType: exportName(c.PkgName) + c.Name + "Input",
 	}
-	if c.ToolName != "" {
-		td.ToolName = c.ToolName
-	} else {
-		td.ToolName = c.PkgName + "." + snakeCase(c.Name)
-	}
+	td.ToolName = toolNameOf(c)
 	td.DescriptionLit = strconv.Quote(normalizeDesc(c.Description, c.Detail))
 	td.LabelsLit = labelsLit(c.Labels)
 

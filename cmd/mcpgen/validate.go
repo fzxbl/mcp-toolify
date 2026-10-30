@@ -56,3 +56,28 @@ func validateSignature(fn *ast.FuncDecl, sig *types.Signature) error {
 	}
 	return nil
 }
+
+// checkUnique 检查跨包唯一性：源包名不得重复（生成的文件名与标识符依赖包名），
+// 最终工具名（含 mcp:name 覆盖）不得重复。报错带两处声明位置。
+func checkUnique(pkgs [][]Candidate) error {
+	pkgSeen := map[string]string{}  // 包名 -> 首个候选位置
+	toolSeen := map[string]string{} // 工具名 -> 首个声明位置
+	for _, cands := range pkgs {
+		if len(cands) == 0 {
+			continue
+		}
+		name := cands[0].PkgName
+		if prev, ok := pkgSeen[name]; ok {
+			return fmt.Errorf("duplicate package name %q: %s 与 %s 的源包名相同，包名必须唯一，请重命名其中一个包", name, prev, cands[0].Pos)
+		}
+		pkgSeen[name] = cands[0].Pos
+		for _, c := range cands {
+			tn := toolNameOf(c)
+			if prev, ok := toolSeen[tn]; ok {
+				return fmt.Errorf("duplicate tool name %q: %s 与 %s 的工具名相同，请用 mcp:name= 重命名其中一个", tn, prev, c.Pos)
+			}
+			toolSeen[tn] = c.Pos
+		}
+	}
+	return nil
+}

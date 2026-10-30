@@ -28,13 +28,20 @@ func main() {
 	outDir, _ := filepath.Abs(filepath.Join(filepath.Dir(*cfgPath), cfg.Output.Dir))
 	check(os.MkdirAll(outDir, 0o755))
 
-	var pkgIdents []string
+	// 先收集全部包的候选并做跨包唯一性检查，重复时在写任何文件之前失败。
+	var all [][]Candidate
 	for _, pkg := range cfg.Packages {
 		cands, err := parseCandidates(pkg)
 		check(err)
 		if len(cands) == 0 {
 			continue
 		}
+		all = append(all, cands)
+	}
+	check(checkUnique(all))
+
+	var pkgIdents []string
+	for _, cands := range all {
 		check(renderPackage(outDir, cands))
 		pkgIdents = append(pkgIdents, exportName(cands[0].PkgName))
 	}
