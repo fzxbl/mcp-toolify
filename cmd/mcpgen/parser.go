@@ -143,14 +143,8 @@ func buildCandidate(pkg *packages.Package, fn *ast.FuncDecl) (Candidate, error) 
 		return cand, err
 	}
 	// 接收者类型名取自类型信息（AST 路径认不出 *T）；值/指针接收者都填。
-	if recv := sig.Recv(); recv != nil {
-		t := types.Unalias(recv.Type())
-		if p, ok := t.(*types.Pointer); ok {
-			t = types.Unalias(p.Elem())
-		}
-		if n, ok := t.(*types.Named); ok {
-			cand.Recv = n.Obj().Name()
-		}
+	if n := recvNamed(sig); n != nil {
+		cand.Recv = n.Obj().Name()
 	}
 	for i := 0; i < sig.Params().Len(); i++ {
 		p := sig.Params().At(i)

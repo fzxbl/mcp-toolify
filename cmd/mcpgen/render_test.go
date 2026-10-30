@@ -197,3 +197,47 @@ func TestRender_Ctx(t *testing.T) {
 		t.Errorf("input 结构体不应含 Ctx 字段:\n%s", out)
 	}
 }
+
+func TestRender_Method(t *testing.T) {
+	tmp := t.TempDir()
+	cands, err := parseCandidates("./testdata/case_method")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := renderPackage(tmp, cands); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := filepath.Glob(filepath.Join(tmp, "*_gen.go"))
+	data, _ := os.ReadFile(files[0])
+	out := string(data)
+	for _, want := range []string{
+		"func handle_case_method_Orders_Get(impl *src.Orders)",
+		"impl.Get(ctx, in.Id)",
+		"func Register_Case_method(s *mcp.Server, opts runtime.RegisterOptions, implCounter *src.Counter, implOrders *src.Orders, implUsers *src.Users)",
+		"handle_case_method_Orders_Get(implOrders)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "(0).") {
+		t.Errorf("不应再生成 T(0).Method 调用:\n%s", out)
+	}
+}
+
+func TestPackageRecvs(t *testing.T) {
+	cands, err := parseCandidates("./testdata/case_method")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(packageRecvs(cands), ","), "Counter,Orders,Users"; got != want {
+		t.Errorf("packageRecvs = %q, want %q", got, want)
+	}
+	rt := recvTools(cands)
+	if got, want := strings.Join(rt["Orders"], ","), "case_method.get,case_method.orders_list"; got != want {
+		t.Errorf("recvTools[Orders] = %q, want %q", got, want)
+	}
+	if _, ok := rt[""]; ok {
+		t.Errorf("recvTools 不应包含包级函数")
+	}
+}

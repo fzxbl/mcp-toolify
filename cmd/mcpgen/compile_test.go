@@ -62,3 +62,8 @@ func buildGeneratedImpl(t *testing.T, withAll bool, pkgDirs []string) string {
 func TestCompile_Ctx(t *testing.T) {
 	buildGenerated(t, "./testdata/case_ctx")
 }
+
+// 只生成包文件：Task 5 之前 all_gen.go 仍按旧签名调用 Register_<Pkg>(s, opts)。
+func TestCompile_Method(t *testing.T) {
+	buildGeneratedPkgOnly(t, "./testdata/case_method")
+}

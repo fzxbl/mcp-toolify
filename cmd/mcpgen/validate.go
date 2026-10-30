@@ -11,6 +11,20 @@ func isContextType(t types.Type) bool {
 	return types.Unalias(t).String() == "context.Context"
 }
 
+// recvNamed 返回方法接收者的命名类型（剥掉别名与 *）；非方法或无法识别时为 nil。
+func recvNamed(sig *types.Signature) *types.Named {
+	recv := sig.Recv()
+	if recv == nil {
+		return nil
+	}
+	t := types.Unalias(recv.Type())
+	if p, ok := t.(*types.Pointer); ok {
+		t = types.Unalias(p.Elem())
+	}
+	n, _ := t.(*types.Named)
+	return n
+}
+
 // validateSignature 拒绝会生成出无法编译或语义错误代码的签名。
 // 报错 = 英文关键短语 + 中文替代写法；调用方负责补上 file:line。
 func validateSignature(fn *ast.FuncDecl, sig *types.Signature) error {
@@ -20,12 +34,8 @@ func validateSignature(fn *ast.FuncDecl, sig *types.Signature) error {
 	if sig.TypeParams().Len() > 0 {
 		return fmt.Errorf("generic function %s: 泛型函数无法生成 JSON schema，请改用具体类型的包装函数", fn.Name.Name)
 	}
-	if recv := sig.Recv(); recv != nil {
-		t := types.Unalias(recv.Type())
-		if p, ok := t.(*types.Pointer); ok {
-			t = types.Unalias(p.Elem())
-		}
-		if n, ok := t.(*types.Named); ok && !n.Obj().Exported() {
+	if sig.Recv() != nil {
+		if n := recvNamed(sig); n != nil && !n.Obj().Exported() {
 			return fmt.Errorf("unexported receiver type %s: 生成的包无法引用未导出类型，请把接收者类型改为导出名", n.Obj().Name())
 		}
 		if sig.RecvTypeParams().Len() > 0 {

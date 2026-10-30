@@ -21,6 +21,20 @@ type {{ .InputType }} struct {
 {{- end }}
 }
 
+{{ if .Recv -}}
+// {{ .HandlerName }} 绑定宿主注入的实例，返回该方法工具的 handler。
+func {{ .HandlerName }}(impl *src.{{ .Recv }}) func(context.Context, *mcp.CallToolRequest, {{ .InputType }}) (*mcp.CallToolResult, {{ .OutputType }}, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in {{ .InputType }}) (*mcp.CallToolResult, {{ .OutputType }}, error) {
+		{{ .CallExpr }}
+{{- if .HasError }}
+		if callErr != nil {
+			return runtime.ToolError(callErr), {{ .OutputZero }}, nil
+		}
+{{- end }}
+		return nil, {{ .OutputExpr }}, nil
+	}
+}
+{{- else -}}
 func {{ .HandlerName }}(ctx context.Context, req *mcp.CallToolRequest, in {{ .InputType }}) (*mcp.CallToolResult, {{ .OutputType }}, error) {
 	{{ .CallExpr }}
 {{- if .HasError }}
@@ -30,9 +44,10 @@ func {{ .HandlerName }}(ctx context.Context, req *mcp.CallToolRequest, in {{ .In
 {{- end }}
 	return nil, {{ .OutputExpr }}, nil
 }
+{{- end }}
 {{ end }}
 
-func Register_{{ .PkgIdent }}(s *mcp.Server, opts runtime.RegisterOptions) {
+func Register_{{ .PkgIdent }}(s *mcp.Server, opts runtime.RegisterOptions{{ range .Recvs }}, impl{{ . }} *src.{{ . }}{{ end }}) {
 {{- range .Tools }}
 	if opts.Allow("{{ $.PkgName }}", {{ .LabelsLit }}) {
 		runtime.AddTool(s, &mcp.Tool{
@@ -41,7 +56,7 @@ func Register_{{ .PkgIdent }}(s *mcp.Server, opts runtime.RegisterOptions) {
 {{- if .NeedsInputSchema }}
 			InputSchema: runtime.AnyInputSchema[{{ .InputType }}](),
 {{- end }}
-		}, {{ .HandlerName }}, "{{ $.PkgName }}", {{ .LabelsLit }})
+		}, {{ .HandlerName }}{{ if .Recv }}(impl{{ .Recv }}){{ end }}, "{{ $.PkgName }}", {{ .LabelsLit }})
 	}
 {{- end }}
 }

@@ -25,6 +25,7 @@ type fieldData struct {
 type toolData struct {
 	ToolName    string
 	HandlerName string
+	Recv        string // 方法工具的接收者类型名；空表示包级函数
 	InputType   string
 	OutputType  string
 	OutputZero  string
@@ -44,6 +45,7 @@ type fileData struct {
 	PkgIdent string
 	Imports  []string // 额外 import 路径（去重，排序），不含 src/runtime/mcp 等已硬编码项
 	Tools    []toolData
+	Recvs    []string // 方法工具用到的接收者类型名（排序去重）；Register_ 按此追加实例参数
 }
 
 func renderPackage(outDir string, cands []Candidate) error {
@@ -56,6 +58,7 @@ func renderPackage(outDir string, cands []Candidate) error {
 		PkgPath:  pkgPath,
 		PkgName:  pkgName,
 		PkgIdent: exportName(pkgName),
+		Recvs:    packageRecvs(cands),
 	}
 	imps := map[string]struct{}{}
 	for _, c := range cands {
@@ -103,12 +106,44 @@ func toolNameOf(c Candidate) string {
 	return c.PkgName + "." + snakeCase(c.Name)
 }
 
+// packageRecvs 返回方法工具用到的接收者类型名（排序去重）；无方法工具时为 nil。
+func packageRecvs(cands []Candidate) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, c := range cands {
+		if c.Recv != "" && !seen[c.Recv] {
+			seen[c.Recv] = true
+			out = append(out, c.Recv)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// recvTools 返回接收者类型名 -> 依赖它的工具名（按源码顺序），供 nil 检查报错使用。
+func recvTools(cands []Candidate) map[string][]string {
+	out := map[string][]string{}
+	for _, c := range cands {
+		if c.Recv != "" {
+			out[c.Recv] = append(out[c.Recv], toolNameOf(c))
+		}
+	}
+	return out
+}
+
 func buildToolData(c Candidate, srcPkgPath string, imps map[string]struct{}) (toolData, error) {
+	// 生成文件同属 tools 包，不同源包可能有同名函数（如 orders.Get
+	// 与 users.Get），故 input 结构体名带上包名前缀避免重复声明；
+	// 同包不同类型也可能有同名方法（如 (*Orders).List 与 (Users).List），
+	// 故方法工具的标识符再带上接收者类型名。
+	ident := c.Name
+	if c.Recv != "" {
+		ident = c.Recv + "_" + c.Name
+	}
 	td := toolData{
-		HandlerName: "handle_" + c.PkgName + "_" + c.Name,
-		// 生成文件同属 tools 包，不同源包可能有同名函数（如 orders.Get
-		// 与 users.Get），故 input 结构体名带上包名前缀避免重复声明。
-		InputType: exportName(c.PkgName) + c.Name + "Input",
+		HandlerName: "handle_" + c.PkgName + "_" + ident,
+		InputType:   exportName(c.PkgName) + c.Recv + c.Name + "Input",
+		Recv:        c.Recv,
 	}
 	td.ToolName = toolNameOf(c)
 	td.DescriptionLit = strconv.Quote(normalizeDesc(c.Description, c.Detail))
@@ -150,14 +185,14 @@ func buildToolData(c Candidate, srcPkgPath string, imps map[string]struct{}) (to
 		td.OutputType = "any"
 		td.OutputZero = "nil"
 		td.OutputExpr = "nil"
-		td.CallExpr = fmt.Sprintf("src.%s(%s)", callExpr(c), strings.Join(callArgs, ", "))
+		td.CallExpr = fmt.Sprintf("%s(%s)", callExpr(c), strings.Join(callArgs, ", "))
 	case 1:
 		if isErrorType(c.Returns[0].Type) {
 			td.OutputType = "any"
 			td.OutputZero = "nil"
 			td.OutputExpr = "nil"
 			td.HasError = true
-			td.CallExpr = fmt.Sprintf("callErr := src.%s(%s)", callExpr(c), strings.Join(callArgs, ", "))
+			td.CallExpr = fmt.Sprintf("callErr := %s(%s)", callExpr(c), strings.Join(callArgs, ", "))
 		} else {
 			// MCP 规范：structuredContent 必须是 JSON object，
 			// 因此把任意返回值统一包成 {"result": ...}。
@@ -169,7 +204,7 @@ func buildToolData(c Candidate, srcPkgPath string, imps map[string]struct{}) (to
 			td.OutputType = "any"
 			td.OutputZero = "nil"
 			td.OutputExpr = `map[string]any{"result": out}`
-			td.CallExpr = fmt.Sprintf("out := src.%s(%s)", callExpr(c), strings.Join(callArgs, ", "))
+			td.CallExpr = fmt.Sprintf("out := %s(%s)", callExpr(c), strings.Join(callArgs, ", "))
 		}
 	case 2:
 		if isErrorType(c.Returns[1].Type) {
@@ -177,7 +212,7 @@ func buildToolData(c Candidate, srcPkgPath string, imps map[string]struct{}) (to
 			td.OutputZero = "nil"
 			td.OutputExpr = `map[string]any{"result": out}`
 			td.HasError = true
-			td.CallExpr = fmt.Sprintf("out, callErr := src.%s(%s)", callExpr(c), strings.Join(callArgs, ", "))
+			td.CallExpr = fmt.Sprintf("out, callErr := %s(%s)", callExpr(c), strings.Join(callArgs, ", "))
 		} else {
 			// 两个非 error 返回值：按返回变量名打包成 map。
 			td.buildMultiReturn(c)
@@ -232,7 +267,7 @@ func (td *toolData) buildMultiReturn(c Candidate) {
 	td.OutputType = "any"
 	td.OutputZero = "nil"
 	td.OutputExpr = "map[string]any{" + strings.Join(entries, ", ") + "}"
-	td.CallExpr = fmt.Sprintf("%s := src.%s(%s)", strings.Join(lhs, ", "), callExpr(c), strings.Join(callArgsOf(c), ", "))
+	td.CallExpr = fmt.Sprintf("%s := %s(%s)", strings.Join(lhs, ", "), callExpr(c), strings.Join(callArgsOf(c), ", "))
 }
 
 // ctxArgs 返回调用实参的前缀：首位为 context.Context 的工具先传入请求 ctx。
@@ -283,11 +318,13 @@ func containsInterface(t types.Type, seen map[string]bool) bool {
 	return false
 }
 
+// callExpr 返回被调函数表达式：包级函数调 src.<Name>；方法调工厂注入的实例 impl.<Name>
+// （impl 恒为 *T，其方法集同时包含值接收者与指针接收者的方法）。
 func callExpr(c Candidate) string {
 	if c.Recv == "" {
-		return c.Name
+		return "src." + c.Name
 	}
-	return c.Recv + "(0)." + c.Name
+	return "impl." + c.Name
 }
 
 func isErrorType(t types.Type) bool { return t.String() == "error" }
