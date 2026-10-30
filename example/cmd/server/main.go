@@ -27,6 +27,7 @@ import (
 	"log"
 
 	toolify "github.com/fzxbl/mcp-toolify"
+	"github.com/fzxbl/mcp-toolify/example/greeter"
 	"github.com/fzxbl/mcp-toolify/example/tools"
 	"github.com/fzxbl/mcp-toolify/plugins/spill"
 	"github.com/fzxbl/mcp-toolify/runtime"
@@ -45,7 +46,14 @@ import (
 // 与 main 分开是为了让端到端冒烟测试能复用同一份装配——「示例能不能起来」这件事
 // 只有真的装一遍才算验证过。
 func build(cfg runtime.Config) (*runtime.Registry, error) {
-	r := toolify.New(cfg, tools.RegisterAll)
+	// Desk 是方法工具的接收者：实例由这里注入，漏填会在装配期报错。
+	reg, err := tools.NewRegistrar(tools.Impls{
+		Greeter_Desk: &greeter.Desk{Greeting: "Welcome"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	r := toolify.New(cfg, reg)
 	for _, install := range []func(*runtime.Registry) error{
 		spill.Install,
 	} {

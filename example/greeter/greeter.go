@@ -6,7 +6,12 @@
 // 配额规则、二次确认规则一致。
 package greeter
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+
+	"github.com/fzxbl/mcp-toolify/runtime"
+)
 
 // Greet 生成一句问候语。
 //
@@ -59,4 +64,28 @@ func Shout(text string) (string, error) {
 		out = append(out, r)
 	}
 	return string(out), nil
+}
+
+// Desk 演示「方法工具」：工具绑在一个由使用方注入的实例上（比如带着数据库连接、
+// 配置的服务对象）。生成器不会替你构造它，而是在 tools.Impls 里留一个字段，
+// 装配时（见 example/cmd/server）把实例交给 tools.NewRegistrar。
+type Desk struct {
+	Greeting string
+}
+
+// Welcome 迎接来访者，并带上调用主体（演示首参 context.Context 与注入实例）。
+//
+// 首个参数 ctx 不会出现在工具的入参 schema 里，传进来的就是本次请求的 ctx，
+// 因此能取到鉴权中间件写入的调用主体。
+//
+// param: name — 来访者的名字
+//
+// mcp:tool
+// mcp:labels=capability=read,risk=none
+func (d *Desk) Welcome(ctx context.Context, name string) (string, error) {
+	caller := ""
+	if sub := runtime.SubjectFromContext(ctx); sub != nil {
+		caller = sub.ID
+	}
+	return fmt.Sprintf("%s, %s! (caller=%s)", d.Greeting, name, caller), nil
 }

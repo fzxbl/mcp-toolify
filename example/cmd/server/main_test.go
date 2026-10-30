@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fzxbl/mcp-toolify/example/tools"
 	"github.com/fzxbl/mcp-toolify/runtime"
 )
 
@@ -111,6 +112,30 @@ func TestExampleAssemblyServesTools(t *testing.T) {
 	}
 	if strings.Contains(list, "greeter.shout") {
 		t.Errorf("只读 token 不该看到 capability=write,risk=high 的工具: %s", list)
+	}
+
+	// 方法工具：实例由 build 注入，ctx 里的调用主体由鉴权中间件写入。
+	// ops-agent 的 identity 是 fixed:ops-robot，所以 caller=ops-robot 同时证明
+	// 「实例传到了」与「请求 ctx 传到了」。
+	status, body = jsonRPC(t, srv.URL, "replace-me-ops",
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":`+
+			`{"name":"greeter.welcome","arguments":{"name":"world"}}}`)
+	if status != http.StatusOK {
+		t.Fatalf("状态码 = %d，正文 = %s", status, body)
+	}
+	if !strings.Contains(body, "Welcome, world!") || !strings.Contains(body, "caller=ops-robot") {
+		t.Fatalf("方法工具必须用注入的实例与请求 ctx，实际正文 = %s", body)
+	}
+}
+
+// 漏注入实例必须在装配期就报错，而不是等到调用时才 nil 解引用。
+func TestExampleNewRegistrarRejectsNilImpl(t *testing.T) {
+	_, err := tools.NewRegistrar(tools.Impls{})
+	if err == nil {
+		t.Fatal("Impls 字段为 nil 必须报错")
+	}
+	if want := "tools.Impls.Greeter_Desk 为 nil：工具 greeter.welcome 需要它"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("报错 = %q，应含 %q", err, want)
 	}
 }
 

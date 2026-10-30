@@ -27,6 +27,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/fzxbl/mcp-toolify/example/greeter"
 	"github.com/fzxbl/mcp-toolify/example/tools"
 	"github.com/fzxbl/mcp-toolify/runtime"
 )
@@ -51,7 +52,12 @@ func main() {
 		Match:  *match,
 	}.Compile()
 	must(err)
-	tools.RegisterAll(srv, opts)
+	// 方法工具需要实例才能注册；这里只列元数据，用占位实例即可。
+	reg, err := tools.NewRegistrar(tools.Impls{
+		Greeter_Desk: &greeter.Desk{Greeting: "Welcome"},
+	})
+	must(err)
+	reg(srv, opts)
 
 	srvT, cliT := mcp.NewInMemoryTransports()
 	go srv.Run(context.Background(), srvT)
