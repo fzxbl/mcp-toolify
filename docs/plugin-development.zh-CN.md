@@ -35,18 +35,18 @@ func Install(r *runtime.Registry) error
 每个字段都必须在 struct 中声明；否则认领检查会把合法配置报为无人认领。配置文件中
 没有被基座或插件认领的键，以及安装了插件段但未安装对应插件，都会导致启动失败。
 
-插件自带的工具还必须同时登记 labels：
+插件自带的工具用 `runtime.AddTool` 注册，它一次完成「加到 MCP server」和「登记 labels」：
 
 ```go
-r.Tool(addTool)
-runtime.RegisterTool(runtime.ToolInfo{
-	Name: "example.status", Pkg: "example",
-	Labels: map[string]string{"capability": "read", "risk": "none"},
+r.Tool(func(s *mcp.Server) {
+	runtime.AddTool(s, &mcp.Tool{Name: "example.status", Description: "..."}, handleStatus,
+		"example", map[string]string{"capability": "read", "risk": "none"})
 })
 ```
 
-缺少 labels 登记的运行期工具在准入规则下不可见、不可执行。生成工具的 labels 由
-生成代码处理；手写或插件运行期工具不能省略这一步。
+token 准入固定启用且 deny-by-default：直接用 `mcp.AddTool` 加的工具没有 labels，
+不可见、不可执行。生成代码同样走 `runtime.AddTool`；手写工具（`r.Server()`）和
+插件工具也必须用它。
 
 ## 3. 中间件顺序
 

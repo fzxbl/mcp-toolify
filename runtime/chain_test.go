@@ -105,7 +105,7 @@ func TestChainNilAndEmpty(t *testing.T) {
 func TestNewCallToolsCall(t *testing.T) {
 	ResetToolsForTest()
 	defer ResetToolsForTest()
-	RegisterTool(ToolInfo{Name: "orders.create", Pkg: "orders", Labels: map[string]string{"risk": "high"}})
+	setToolLabels(ToolInfo{Name: "orders.create", Pkg: "orders", Labels: map[string]string{"risk": "high"}})
 
 	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{
 		Name:      "orders.create",

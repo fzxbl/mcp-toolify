@@ -65,11 +65,8 @@ const exploreDesc = "探索一份已落盘的 spill 内容（read/grep/schema/jq
 // labels 打的是 capability=read / risk=none：它只读已经产出的内容，且内容的
 // 可见性由落盘时的属主与 token 规则决定，不是一个能改变线上状态的操作。
 func addExploreTool(s *mcp.Server) {
-	runtime.RegisterTool(runtime.ToolInfo{
-		Name: exploreToolName, Pkg: Name,
-		Labels: map[string]string{"capability": "read", "risk": "none", "plugin": Name},
-	})
-	mcp.AddTool(s, &mcp.Tool{Name: exploreToolName, Description: exploreDesc}, handleExplore)
+	runtime.AddTool(s, &mcp.Tool{Name: exploreToolName, Description: exploreDesc}, handleExplore,
+		Name, map[string]string{"capability": "read", "risk": "none", "plugin": Name})
 }
 
 // handleExplore 是工具处理函数。

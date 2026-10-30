@@ -8,7 +8,7 @@ import (
 
 func TestRegisterAndLookupTool(t *testing.T) {
 	ResetToolsForTest()
-	RegisterTool(ToolInfo{Name: "orders.create", Pkg: "orders",
+	setToolLabels(ToolInfo{Name: "orders.create", Pkg: "orders",
 		Labels: map[string]string{"capability": "write", "risk": "high"}})
 	info, ok := LookupTool("orders.create")
 	if !ok {
@@ -45,10 +45,10 @@ func TestAllLabelsBuiltinProjectionWins(t *testing.T) {
 }
 
 // 注册表必须与调用方的 map 解耦：注册后改传入的 map 不能影响已登记的元数据。
-func TestRegisterToolCopiesLabels(t *testing.T) {
+func TestToolLabelsCopiesLabels(t *testing.T) {
 	ResetToolsForTest()
 	labels := map[string]string{"risk": "high"}
-	RegisterTool(ToolInfo{Name: "a.b", Pkg: "a", Labels: labels})
+	setToolLabels(ToolInfo{Name: "a.b", Pkg: "a", Labels: labels})
 	labels["risk"] = "none"
 	info, ok := LookupTool("a.b")
 	if !ok {
@@ -59,10 +59,10 @@ func TestRegisterToolCopiesLabels(t *testing.T) {
 	}
 }
 
-func TestRegisterToolOverwritesSameName(t *testing.T) {
+func TestToolLabelsOverwritesSameName(t *testing.T) {
 	ResetToolsForTest()
-	RegisterTool(ToolInfo{Name: "a.b", Pkg: "a", Labels: map[string]string{"risk": "low"}})
-	RegisterTool(ToolInfo{Name: "a.b", Pkg: "a", Labels: map[string]string{"risk": "high"}})
+	setToolLabels(ToolInfo{Name: "a.b", Pkg: "a", Labels: map[string]string{"risk": "low"}})
+	setToolLabels(ToolInfo{Name: "a.b", Pkg: "a", Labels: map[string]string{"risk": "high"}})
 	if all := Tools(); len(all) != 1 {
 		t.Fatalf("Tools() len = %d, want 1", len(all))
 	}
@@ -94,7 +94,7 @@ func TestAllLabelsNilLabels(t *testing.T) {
 // 否则任何插件都能永久改写 authz 的判据。
 func TestLookupToolReturnsLabelCopy(t *testing.T) {
 	ResetToolsForTest()
-	RegisterTool(ToolInfo{Name: "a.b", Pkg: "a", Labels: map[string]string{"risk": "high"}})
+	setToolLabels(ToolInfo{Name: "a.b", Pkg: "a", Labels: map[string]string{"risk": "high"}})
 	got, _ := LookupTool("a.b")
 	got.Labels["risk"] = "none"
 	got.Labels["injected"] = "yes"
@@ -109,7 +109,7 @@ func TestLookupToolReturnsLabelCopy(t *testing.T) {
 
 func TestToolsReturnsLabelCopy(t *testing.T) {
 	ResetToolsForTest()
-	RegisterTool(ToolInfo{Name: "a.b", Pkg: "a", Labels: map[string]string{"risk": "high"}})
+	setToolLabels(ToolInfo{Name: "a.b", Pkg: "a", Labels: map[string]string{"risk": "high"}})
 	all := Tools()
 	if len(all) != 1 {
 		t.Fatalf("Tools() len = %d, want 1", len(all))
@@ -122,13 +122,13 @@ func TestToolsReturnsLabelCopy(t *testing.T) {
 }
 
 // 并发下读写混跑：一组 goroutine 反复 LookupTool 并写回返回的 Labels，
-// 一组反复 Tools 并写返回值，一组反复 RegisterTool。
+// 一组反复 Tools 并写返回值，一组反复 setToolLabels。
 // 只要出口不深拷贝，-race 下必然报 concurrent map read and map write。
 func TestToolRegistryConcurrentAccess(t *testing.T) {
 	ResetToolsForTest()
 	const names = 4
 	for i := 0; i < names; i++ {
-		RegisterTool(ToolInfo{Name: "pkg.t" + strconv.Itoa(i), Pkg: "pkg",
+		setToolLabels(ToolInfo{Name: "pkg.t" + strconv.Itoa(i), Pkg: "pkg",
 			Labels: map[string]string{"risk": "high", "capability": "write"}})
 	}
 
@@ -165,7 +165,7 @@ func TestToolRegistryConcurrentAccess(t *testing.T) {
 		go func(g int) {
 			defer wg.Done()
 			for i := 0; i < iterations; i++ {
-				RegisterTool(ToolInfo{Name: "pkg.t" + strconv.Itoa(g%names), Pkg: "pkg",
+				setToolLabels(ToolInfo{Name: "pkg.t" + strconv.Itoa(g%names), Pkg: "pkg",
 					Labels: map[string]string{"risk": "high", "capability": "write"}})
 			}
 		}(g)

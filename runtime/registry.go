@@ -109,8 +109,8 @@ func New(cfg Config, registrar Registrar) *Registry {
 func (r *Registry) RegisterCounts() (registered, filtered int) { return r.opts.Counts() }
 
 // Server 返回底层 MCP server，供插件之外的宿主代码注册手写工具。
-// 注意：这样注册的工具必须另行调用 RegisterTool 登记 labels，否则在 token 准入里
-// 既不可见也不可执行（deny-by-default）。
+// 注意：必须用 AddTool 注册（它同时登记 labels）；直接 mcp.AddTool 的工具在 token
+// 准入里既不可见也不可执行（deny-by-default）。
 func (r *Registry) Server() *mcp.Server { return r.srv }
 
 // Named 声明当前插件名，用于 required_plugins 校验与启动日志。

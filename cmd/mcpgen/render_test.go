@@ -95,17 +95,20 @@ func TestRender_Labels(t *testing.T) {
 	for _, want := range []string{
 		// labels 按 key 字典序渲染（testdata 里刻意按非字典序书写），保证生成结果稳定
 		`opts.Allow("case_risk", map[string]string{"capability": "write", "owner": "core", "risk": "high"})`,
-		`Labels: map[string]string{"capability": "write", "owner": "core", "risk": "high"}`,
+		`"case_risk", map[string]string{"capability": "write", "owner": "core", "risk": "high"})`,
 		// 无 mcp:labels 的工具渲染成 nil
 		`opts.Allow("case_risk", nil)`,
-		`Labels: nil`,
+		`"case_risk", nil)`,
+		// 加到 server 与登记 labels 走同一个入口，不再分两步
+		`runtime.AddTool(s, &mcp.Tool{`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
 	// risk / capability 不再是基座一等公民，生成代码不得再引用旧元数据 API
-	for _, unwanted := range []string{"RegisterMeta", "runtime.RiskHigh", "runtime.ReadWrite", "MaybeSpill"} {
+	for _, unwanted := range []string{"RegisterMeta", "runtime.RiskHigh", "runtime.ReadWrite", "MaybeSpill",
+		"mcp.AddTool(", "RegisterTool", "func register_"} {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("generated code should not reference %q:\n%s", unwanted, out)
 		}

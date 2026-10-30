@@ -10,9 +10,9 @@ import (
 
 func TestTokenAuthzCallAndList(t *testing.T) {
 	ResetToolsForTest()
-	RegisterTool(ToolInfo{Name: "a.read", Pkg: "a", Labels: map[string]string{"capability": "read", "risk": "low"}})
-	RegisterTool(ToolInfo{Name: "a.write", Pkg: "a", Labels: map[string]string{"capability": "write", "risk": "high"}})
-	RegisterTool(ToolInfo{Name: "a.untagged", Pkg: "a"})
+	setToolLabels(ToolInfo{Name: "a.read", Pkg: "a", Labels: map[string]string{"capability": "read", "risk": "low"}})
+	setToolLabels(ToolInfo{Name: "a.write", Pkg: "a", Labels: map[string]string{"capability": "write", "risk": "high"}})
+	setToolLabels(ToolInfo{Name: "a.untagged", Pkg: "a"})
 
 	cfg := TokenConfig{Token: "t1", Name: "ro", Applicant: "zhangsan",
 		Allow: []string{"capability=read"}, Deny: []string{"!risk"}}
@@ -192,13 +192,13 @@ func TestTokenAuthzTokenName(t *testing.T) {
 // 一律不可见，即使它命中 allow（labels 无从取得，不能放行）。
 func TestTokenAuthzListHidesUnregistered(t *testing.T) {
 	ResetToolsForTest()
-	RegisterTool(ToolInfo{Name: "a.read", Pkg: "a", Labels: map[string]string{"capability": "read", "risk": "low"}})
+	setToolLabels(ToolInfo{Name: "a.read", Pkg: "a", Labels: map[string]string{"capability": "read", "risk": "low"}})
 
 	az := mustAuthz(t, []string{"capability=read", "!capability"}, []string{"!risk"})
 	lc := &Call{Method: "tools/list", Subject: &Subject{Token: "ro"}, Tools: Tools}
 	res, err := Chain([]Middleware{az.Middleware()}, func(ctx context.Context, c *Call) (*Result, error) {
 		return ListResult(&mcp.ListToolsResult{Tools: []*mcp.Tool{
-			{Name: "a.read"}, {Name: "spill_explore"}, // 后者未 RegisterTool
+			{Name: "a.read"}, {Name: "spill_explore"}, // 后者未登记 labels
 		}}), nil
 	})(context.Background(), lc)
 	if err != nil {
@@ -213,7 +213,7 @@ func TestTokenAuthzListHidesUnregistered(t *testing.T) {
 // 命中 allow 的 tools/call 应到达链尾，initialize 之类的方法不做任何判定。
 func TestTokenAuthzPassthrough(t *testing.T) {
 	ResetToolsForTest()
-	RegisterTool(ToolInfo{Name: "a.read", Pkg: "a", Labels: map[string]string{"capability": "read", "risk": "low"}})
+	setToolLabels(ToolInfo{Name: "a.read", Pkg: "a", Labels: map[string]string{"capability": "read", "risk": "low"}})
 	az := mustAuthz(t, []string{"capability=read"}, []string{"!risk"})
 
 	reached := false
@@ -243,7 +243,7 @@ func TestTokenAuthzPassthrough(t *testing.T) {
 // TestTokenAuthzDenyMeta 验证拒绝时按契约写入 Meta，供审计插件读取。
 func TestTokenAuthzDenyMeta(t *testing.T) {
 	ResetToolsForTest()
-	RegisterTool(ToolInfo{Name: "a.write", Pkg: "a", Labels: map[string]string{"capability": "write", "risk": "high"}})
+	setToolLabels(ToolInfo{Name: "a.write", Pkg: "a", Labels: map[string]string{"capability": "write", "risk": "high"}})
 	az := mustAuthz(t, []string{"capability=read"}, []string{"!risk"})
 	c := &Call{Method: "tools/call", Tool: "a.write",
 		Labels:  map[string]string{"capability": "write", "risk": "high"},
@@ -304,7 +304,7 @@ func TestTokenAuthzUnregisteredToolDenied(t *testing.T) {
 // 链上任何一环都能改 Call.Labels，伪造的 labels 不得骗过准入。
 func TestTokenAuthzCallUsesRegistryLabels(t *testing.T) {
 	ResetToolsForTest()
-	RegisterTool(ToolInfo{Name: "a.write", Pkg: "a", Labels: map[string]string{"capability": "write", "risk": "high"}})
+	setToolLabels(ToolInfo{Name: "a.write", Pkg: "a", Labels: map[string]string{"capability": "write", "risk": "high"}})
 	az := mustAuthz(t, []string{"capability=read"}, []string{"!risk"})
 
 	c := &Call{Method: "tools/call", Tool: "a.write",
@@ -323,7 +323,7 @@ func TestTokenAuthzCallUsesRegistryLabels(t *testing.T) {
 // unknown token name，绝不回显传入值（上游填错时传入的可能是 token 值）。
 func TestTokenAuthzUnknownTokenName(t *testing.T) {
 	ResetToolsForTest()
-	RegisterTool(ToolInfo{Name: "a.read", Pkg: "a", Labels: map[string]string{"capability": "read", "risk": "low"}})
+	setToolLabels(ToolInfo{Name: "a.read", Pkg: "a", Labels: map[string]string{"capability": "read", "risk": "low"}})
 	az := mustAuthz(t, []string{"capability=read"}, []string{"!risk"})
 
 	const leaked = "s3cr3t-token-value"
@@ -362,8 +362,8 @@ func resultText(res *Result) string {
 // 不得原地改写调用方仍持有的那个切片（否则一个 token 的过滤结果会污染另一个）。
 func TestTokenAuthzListDoesNotAliasUpstream(t *testing.T) {
 	ResetToolsForTest()
-	RegisterTool(ToolInfo{Name: "a.read", Pkg: "a", Labels: map[string]string{"capability": "read", "risk": "low"}})
-	RegisterTool(ToolInfo{Name: "a.write", Pkg: "a", Labels: map[string]string{"capability": "write", "risk": "high"}})
+	setToolLabels(ToolInfo{Name: "a.read", Pkg: "a", Labels: map[string]string{"capability": "read", "risk": "low"}})
+	setToolLabels(ToolInfo{Name: "a.write", Pkg: "a", Labels: map[string]string{"capability": "write", "risk": "high"}})
 	az := mustAuthz(t, []string{"capability=read"}, []string{"!risk"})
 
 	upstream := []*mcp.Tool{{Name: "a.write"}, {Name: "a.read"}}
@@ -383,7 +383,7 @@ func TestTokenAuthzListDoesNotAliasUpstream(t *testing.T) {
 // TestTokenAuthzNilSubject 验证 Subject 缺失时 fail-closed（不 panic、直接拒）。
 func TestTokenAuthzNilSubject(t *testing.T) {
 	ResetToolsForTest()
-	RegisterTool(ToolInfo{Name: "a.read", Pkg: "a", Labels: map[string]string{"capability": "read", "risk": "low"}})
+	setToolLabels(ToolInfo{Name: "a.read", Pkg: "a", Labels: map[string]string{"capability": "read", "risk": "low"}})
 	az := mustAuthz(t, []string{"capability=read"}, []string{"!risk"})
 	c := &Call{Method: "tools/call", Tool: "a.read",
 		Labels: map[string]string{"capability": "read", "risk": "low"}}

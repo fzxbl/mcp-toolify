@@ -18,6 +18,7 @@ package toolify
 
 import (
 	"github.com/fzxbl/mcp-toolify/runtime"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // Config 是 server 启动配置（runtime.Config 的别名，外部只需 import 本包）。
@@ -60,9 +61,11 @@ func SetPeerProvider(fn func() []string) { runtime.SetPeerProvider(fn) }
 // RoutePath / PublicURL。本包不做一层同名转发——插件本来就依赖 runtime.Registry，
 // 两套入口并存只会让「该用哪个」变成一次没必要的选择。
 
-// RegisterToolMeta 为「非注解生成、运行时注册」的外部工具登记 labels（准入判据）。
-// 必须在处理请求前调用：未登记 labels 的工具在 token 准入里一律不可见、不可执行
-// （deny-by-default）。labels 的 key 语义由配置里的 selector 与插件解释，基座不解释。
-func RegisterToolMeta(name, pkg string, labels map[string]string) {
-	runtime.RegisterTool(runtime.ToolInfo{Name: name, Pkg: pkg, Labels: labels})
+// AddTool 为「非注解生成、运行时注册」的外部工具注册到 MCP server 并登记 labels
+// （准入判据），等同于 runtime.AddTool。必须在处理请求前调用。直接用 mcp.AddTool
+// 注册的工具没有 labels，在 token 准入里一律不可见、不可执行（deny-by-default）。
+// labels 的 key 语义由配置里的 selector 与插件解释，基座不解释。
+func AddTool[In, Out any](s *mcp.Server, t *mcp.Tool, h mcp.ToolHandlerFor[In, Out],
+	pkg string, labels map[string]string) {
+	runtime.AddTool(s, t, h, pkg, labels)
 }

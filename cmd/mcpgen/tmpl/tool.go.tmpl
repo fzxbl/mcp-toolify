@@ -30,27 +30,18 @@ func {{ .HandlerName }}(ctx context.Context, req *mcp.CallToolRequest, in {{ .In
 {{- end }}
 	return nil, {{ .OutputExpr }}, nil
 }
-
-func register_{{ .HandlerName }}(s *mcp.Server) {
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "{{ .ToolName }}",
-		Description: {{ .DescriptionLit }},
-{{- if .NeedsInputSchema }}
-		InputSchema: runtime.AnyInputSchema[{{ .InputType }}](),
-{{- end }}
-	}, {{ .HandlerName }})
-}
 {{ end }}
 
 func Register_{{ .PkgIdent }}(s *mcp.Server, opts runtime.RegisterOptions) {
 {{- range .Tools }}
 	if opts.Allow("{{ $.PkgName }}", {{ .LabelsLit }}) {
-		register_{{ .HandlerName }}(s)
-		runtime.RegisterTool(runtime.ToolInfo{
-			Name:   "{{ .ToolName }}",
-			Pkg:    "{{ $.PkgName }}",
-			Labels: {{ .LabelsLit }},
-		})
+		runtime.AddTool(s, &mcp.Tool{
+			Name:        "{{ .ToolName }}",
+			Description: {{ .DescriptionLit }},
+{{- if .NeedsInputSchema }}
+			InputSchema: runtime.AnyInputSchema[{{ .InputType }}](),
+{{- end }}
+		}, {{ .HandlerName }}, "{{ $.PkgName }}", {{ .LabelsLit }})
 	}
 {{- end }}
 }

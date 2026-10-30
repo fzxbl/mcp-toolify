@@ -50,12 +50,10 @@ func newFixture(t *testing.T, tokens string, extra string, payload string) *fixt
 		strings.ReplaceAll(dir, `\`, `\\`) + "\"\n" + extra
 	r := runtime.New(runtime.Config{ConfigPath: writeConfig(t, body)},
 		func(s *mcp.Server, opts runtime.RegisterOptions) {
-			mcp.AddTool(s, &mcp.Tool{Name: "demo.big", Description: "返回一大坨"},
+			runtime.AddTool(s, &mcp.Tool{Name: "demo.big", Description: "返回一大坨"},
 				func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 					return nil, map[string]any{"result": payload}, nil
-				})
-			runtime.RegisterTool(runtime.ToolInfo{Name: "demo.big", Pkg: "demo",
-				Labels: map[string]string{"capability": "read", "risk": "none"}})
+				}, "demo", map[string]string{"capability": "read", "risk": "none"})
 		})
 	if err := Install(r); err != nil {
 		t.Fatalf("Install: %v", err)

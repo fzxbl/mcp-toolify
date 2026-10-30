@@ -1,6 +1,10 @@
 package runtime
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
 
 // ToolInfo 是一个工具的元数据。Labels 对基座不透明：基座只做投影与匹配，
 // 不解释任何 key 的语义（risk / capability 等均由配置与插件解释）。
@@ -42,9 +46,25 @@ func copyLabels(m map[string]string) map[string]string {
 	return out
 }
 
-// RegisterTool 登记一个工具的元数据，由生成代码在注册工具时调用。
+// AddTool 把工具加到 MCP server，并同时登记它的 labels（token 准入与 selector 的判据）。
+// 这是注册工具的唯一对外入口，生成代码、插件和宿主手写工具都走它。
+//
+// 两步合在一起而不是分开暴露：token 准入固定启用且 deny-by-default，只 mcp.AddTool
+// 不登记 labels 的工具既不可见也不可执行；分成两个函数等于把「漏调一个」留给每个调用方。
+// 工具名只取 t.Name 一处，避免两边各写一遍名字、写岔后 labels 挂到别的工具上。
+// labels 可以为空：工具照样登记，是否放行仍按 selector 对 name/pkg 投影等的匹配决定。
+//
+// 先登记 labels 再加到 server：反过来会有一个窗口期，工具已能被 tools/list 看到，
+// 准入却查不到它。
+func AddTool[In, Out any](s *mcp.Server, t *mcp.Tool, h mcp.ToolHandlerFor[In, Out],
+	pkg string, labels map[string]string) {
+	setToolLabels(ToolInfo{Name: t.Name, Pkg: pkg, Labels: labels})
+	mcp.AddTool(s, t, h)
+}
+
+// setToolLabels 写元数据注册表，同名重复调用以后者为准。不对外开放，理由见 AddTool。
 // Labels 会被拷贝一份，避免注册表与调用方共享同一个 map。
-func RegisterTool(t ToolInfo) {
+func setToolLabels(t ToolInfo) {
 	cp := ToolInfo{Name: t.Name, Pkg: t.Pkg, Labels: copyLabels(t.Labels)}
 	toolsMu.Lock()
 	defer toolsMu.Unlock()

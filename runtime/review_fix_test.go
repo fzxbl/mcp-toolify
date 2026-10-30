@@ -70,12 +70,10 @@ func registerReadWriteTools(s *mcp.Server) {
 		name       string
 		capability string
 	}{{"demo.read", "read"}, {"demo.write", "write"}} {
-		mcp.AddTool(s, &mcp.Tool{Name: tc.name, Description: tc.name},
+		AddTool(s, &mcp.Tool{Name: tc.name, Description: tc.name},
 			func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 				return nil, "done", nil
-			})
-		RegisterTool(ToolInfo{Name: tc.name, Pkg: "demo",
-			Labels: map[string]string{"capability": tc.capability, "risk": "low"}})
+			}, "demo", map[string]string{"capability": tc.capability, "risk": "low"})
 	}
 }
 

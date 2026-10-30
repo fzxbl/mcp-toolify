@@ -82,7 +82,7 @@ func TestRegistryLogsRegisteredAndFiltered(t *testing.T) {
 	r := New(Config{Match: "capability=read", ConfigPath: writeTokenConfig(t, okTokenConfig)},
 		func(s *mcp.Server, opts RegisterOptions) {
 			if opts.Allow("demo", map[string]string{"capability": "read"}) {
-				RegisterTool(ToolInfo{Name: "demo.read", Pkg: "demo",
+				setToolLabels(ToolInfo{Name: "demo.read", Pkg: "demo",
 					Labels: map[string]string{"capability": "read"}})
 			}
 			if opts.Allow("demo", map[string]string{"capability": "write"}) {
@@ -218,12 +218,10 @@ func TestTokenAuthzRunsBeforePluginChain(t *testing.T) {
 	var pluginRan bool
 	r := New(Config{ConfigPath: writeTokenConfig(t, okTokenConfig)},
 		func(s *mcp.Server, opts RegisterOptions) {
-			mcp.AddTool(s, &mcp.Tool{Name: "demo.write", Description: "write tool"},
+			AddTool(s, &mcp.Tool{Name: "demo.write", Description: "write tool"},
 				func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 					return nil, "done", nil
-				})
-			RegisterTool(ToolInfo{Name: "demo.write", Pkg: "demo",
-				Labels: map[string]string{"capability": "write", "risk": "high"}})
+				}, "demo", map[string]string{"capability": "write", "risk": "high"})
 		})
 	r.Named("probe")
 	r.Use(func(next Handler) Handler {

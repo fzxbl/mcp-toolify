@@ -221,12 +221,10 @@ func TestEndToEndSpillOverHTTP(t *testing.T) {
 threshold_bytes = 4096
 dir = "`+strings.ReplaceAll(t.TempDir(), `\`, `\\`)+`"
 `)}, func(s *mcp.Server, opts runtime.RegisterOptions) {
-		mcp.AddTool(s, &mcp.Tool{Name: "demo.big", Description: "返回一大坨"},
+		runtime.AddTool(s, &mcp.Tool{Name: "demo.big", Description: "返回一大坨"},
 			func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
 				return nil, map[string]any{"result": payload}, nil
-			})
-		runtime.RegisterTool(runtime.ToolInfo{Name: "demo.big", Pkg: "demo",
-			Labels: map[string]string{"capability": "read", "risk": "none"}})
+			}, "demo", map[string]string{"capability": "read", "risk": "none"})
 	})
 	if err := Install(r); err != nil {
 		t.Fatalf("Install: %v", err)

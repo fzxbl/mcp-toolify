@@ -30,17 +30,16 @@ In-tree and external plugins use the same public interface; neither has extra pr
 
 Configuration must be decoded into a named struct. Do not use `map[string]any` or another map as a fallback. Every field promised by the documentation must be declared in the struct; otherwise the claiming check reports valid configuration as unclaimed. Keys in the configuration file that are claimed by neither the base nor a plugin, and a plugin section without its plugin installed, both fail startup.
 
-A plugin-owned tool must also be registered with labels:
+Plugin-owned tools are registered with `runtime.AddTool`, which adds the tool to the MCP server and records its labels in one call:
 
 ```go
-r.Tool(addTool)
-runtime.RegisterTool(runtime.ToolInfo{
-    Name: "example.status", Pkg: "example",
-    Labels: map[string]string{"capability": "read", "risk": "none"},
+r.Tool(func(s *mcp.Server) {
+    runtime.AddTool(s, &mcp.Tool{Name: "example.status", Description: "..."}, handleStatus,
+        "example", map[string]string{"capability": "read", "risk": "none"})
 })
 ```
 
-A runtime tool without a label registration is invisible and cannot execute under admission rules. Generated tools get their labels from generated code; handwritten or runtime plugin tools must not omit this step.
+Token admission is always on and deny-by-default: a tool added directly with `mcp.AddTool` has no labels, so it is invisible and cannot execute. Generated code calls `runtime.AddTool` too; handwritten tools (`r.Server()`) and plugin tools must use it as well.
 
 ## 3. Middleware order
 

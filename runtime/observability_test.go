@@ -91,7 +91,7 @@ func TestInboundLogIDMustBeWellFormed(t *testing.T) {
 func TestAuthzDenyIsLogged(t *testing.T) {
 	ResetToolsForTest()
 	defer ResetToolsForTest()
-	RegisterTool(ToolInfo{Name: "demo.write", Pkg: "demo",
+	setToolLabels(ToolInfo{Name: "demo.write", Pkg: "demo",
 		Labels: map[string]string{"capability": "write"}})
 
 	az := weakAuthz(t) // weak 只允许 capability=confirm
@@ -124,9 +124,9 @@ func TestAuthzDenyIsLogged(t *testing.T) {
 func TestAuthzListFilterIsLogged(t *testing.T) {
 	ResetToolsForTest()
 	defer ResetToolsForTest()
-	RegisterTool(ToolInfo{Name: "demo.confirm", Pkg: "demo",
+	setToolLabels(ToolInfo{Name: "demo.confirm", Pkg: "demo",
 		Labels: map[string]string{"capability": "confirm"}})
-	RegisterTool(ToolInfo{Name: "demo.write", Pkg: "demo",
+	setToolLabels(ToolInfo{Name: "demo.write", Pkg: "demo",
 		Labels: map[string]string{"capability": "write"}})
 
 	az := weakAuthz(t)
