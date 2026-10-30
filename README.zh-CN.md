@@ -113,6 +113,8 @@ curl -sS localhost:8011 \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"greeter.greet","arguments":{"name":"world","excited":true}}}'
 ```
 
+示例里还包含一个方法工具，因此它用 `tools.NewRegistrar(tools.Impls{...})` 装配，而不是 `tools.RegisterAll`；详见[方法工具](docs/code-generation.zh-CN.md#方法工具)。
+
 ## 注解概览
 
 注解写在导出函数的 godoc 中：

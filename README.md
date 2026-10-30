@@ -119,6 +119,8 @@ curl -sS localhost:8011 \
 
 The runnable example is under [`example/`](./example).
 
+The example also contains a method tool, so it assembles with `tools.NewRegistrar(tools.Impls{...})` instead of `tools.RegisterAll`; see [method tools](docs/code-generation.md#method-tools).
+
 ## Annotation overview
 
 Annotations are written in the godoc comment of an exported function:
