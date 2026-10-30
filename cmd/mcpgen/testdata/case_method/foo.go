@@ -48,3 +48,11 @@ type Counter int
 //
 // mcp:tool
 func (c Counter) Inc(n int) int { return int(c) + n }
+
+// OrdersGet 与 (*Orders).Get 拼接后同名的包级函数，回归输入结构体名撞名。
+//
+// param: id — 订单 ID
+//
+// mcp:tool
+// mcp:name=case_method.orders_get_fn
+func OrdersGet(id string) string { return id }

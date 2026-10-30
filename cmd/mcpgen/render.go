@@ -135,14 +135,18 @@ func buildToolData(c Candidate, srcPkgPath string, imps map[string]struct{}) (to
 	// 生成文件同属 tools 包，不同源包可能有同名函数（如 orders.Get
 	// 与 users.Get），故 input 结构体名带上包名前缀避免重复声明；
 	// 同包不同类型也可能有同名方法（如 (*Orders).List 与 (Users).List），
-	// 故方法工具的标识符再带上接收者类型名。
+	// 故方法工具的标识符再带上接收者类型名，并用 _ 分隔：导出函数名首字母大写，
+	// 包级函数的 <PkgIdent><Name> 不可能在 PkgIdent 后紧跟 _，两类名字因此不相交
+	// （如函数 OrdersGet 与方法 (*Orders).Get）。
 	ident := c.Name
+	inputType := exportName(c.PkgName) + c.Name + "Input"
 	if c.Recv != "" {
 		ident = c.Recv + "_" + c.Name
+		inputType = exportName(c.PkgName) + "_" + c.Recv + "_" + c.Name + "Input"
 	}
 	td := toolData{
 		HandlerName: "handle_" + c.PkgName + "_" + ident,
-		InputType:   exportName(c.PkgName) + c.Recv + c.Name + "Input",
+		InputType:   inputType,
 		Recv:        c.Recv,
 	}
 	td.ToolName = toolNameOf(c)

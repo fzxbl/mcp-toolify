@@ -215,6 +215,8 @@ func TestRender_Method(t *testing.T) {
 		"impl.Get(ctx, in.Id)",
 		"func Register_Case_method(s *mcp.Server, opts runtime.RegisterOptions, implCounter *src.Counter, implOrders *src.Orders, implUsers *src.Users)",
 		"handle_case_method_Orders_Get(implOrders)",
+		"type Case_method_Orders_GetInput struct",
+		"type Case_methodOrdersGetInput struct", // 包级函数 OrdersGet，不得与方法撞名
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
