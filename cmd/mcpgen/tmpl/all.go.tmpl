@@ -31,14 +31,14 @@ func NewRegistrar(impls Impls) (runtime.Registrar, error) {
 {{- end }}
 	return func(s *mcp.Server, opts runtime.RegisterOptions) {
 {{- range .ImplPkgs }}
-		Register_{{ .Ident }}(s, opts{{ .Args }})
+		{{ .RegisterName }}(s, opts{{ .Args }})
 {{- end }}
 	}, nil
 }
 {{- else -}}
 func RegisterAll(s *mcp.Server, opts runtime.RegisterOptions) {
 {{- range .Packages }}
-	Register_{{ . }}(s, opts)
+	{{ . }}(s, opts)
 {{- end }}
 }
 {{- end }}

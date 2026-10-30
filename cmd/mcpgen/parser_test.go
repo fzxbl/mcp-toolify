@@ -223,7 +223,7 @@ func TestParseCandidates_RejectedSignatures(t *testing.T) {
 		{"./testdata/case_bad_collision", "parameter name collision"},
 		{"./testdata/case_bad_ctx_pos", "context.Context must be the first parameter"},
 		{"./testdata/case_bad_recv_unexported", "unexported receiver type"},
-		{"./testdata/case_bad_recv_generic", "generic receiver type"},
+		{"./testdata/case_bad_recv_generic", "generic receiver type Box"},
 	}
 	for _, c := range cases {
 		_, err := parseCandidates(c.dir)
@@ -236,6 +236,10 @@ func TestParseCandidates_RejectedSignatures(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "foo.go:") {
 			t.Errorf("%s: error should carry file:line, got %v", c.dir, err)
+		}
+		// 接收者报错须附 §5.2 建议
+		if strings.Contains(c.wantPart, "receiver type") && !strings.Contains(err.Error(), "不需要状态的工具请写成包级函数；写成方法意味着宿主必须交一个实例") {
+			t.Errorf("%s: 接收者报错缺少 §5.2 建议: %v", c.dir, err)
 		}
 	}
 }

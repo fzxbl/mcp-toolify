@@ -35,7 +35,7 @@ func {{ .HandlerName }}(ctx context.Context, req *mcp.CallToolRequest, in {{ .In
 {{- end }}
 {{ end }}
 
-func Register_{{ .PkgIdent }}(s *mcp.Server, opts runtime.RegisterOptions{{ range .Recvs }}, impl{{ . }} *src.{{ . }}{{ end }}) {
+func {{ .RegisterName }}(s *mcp.Server, opts runtime.RegisterOptions{{ range .Recvs }}, impl{{ . }} *src.{{ . }}{{ end }}) {
 {{- range .Tools }}
 	if opts.Allow("{{ $.PkgName }}", {{ .LabelsLit }}) {
 		runtime.AddTool(s, &mcp.Tool{

@@ -39,6 +39,7 @@ func main() {
 		all = append(all, cands)
 	}
 	check(checkUnique(all))
+	check(checkIdentCollisions(all))
 
 	var pkgs []pkgInfo
 	for _, cands := range all {

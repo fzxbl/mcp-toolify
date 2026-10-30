@@ -36,10 +36,10 @@ func validateSignature(fn *ast.FuncDecl, sig *types.Signature) error {
 	}
 	if sig.Recv() != nil {
 		if n := recvNamed(sig); n != nil && !n.Obj().Exported() {
-			return fmt.Errorf("unexported receiver type %s: 生成的包无法引用未导出类型，请把接收者类型改为导出名", n.Obj().Name())
+			return fmt.Errorf("unexported receiver type %s: 生成的包无法引用未导出类型，请把接收者类型改为导出名。不需要状态的工具请写成包级函数；写成方法意味着宿主必须交一个实例", n.Obj().Name())
 		}
 		if sig.RecvTypeParams().Len() > 0 {
-			return fmt.Errorf("generic receiver type %s: 泛型接收者无法实例化，请改用具体类型的包装类型", fn.Name.Name)
+			return fmt.Errorf("generic receiver type %s: 泛型接收者无法实例化，请改用具体类型的包装类型。不需要状态的工具请写成包级函数；写成方法意味着宿主必须交一个实例", recvTypeName(fn, sig))
 		}
 	}
 	if sig.Variadic() {
@@ -90,4 +90,74 @@ func checkUnique(pkgs [][]Candidate) error {
 		}
 	}
 	return nil
+}
+
+// checkIdentCollisions 检查全部生成标识符在 tools 包内是否唯一：
+// 每个候选的 handler 函数名与 input 类型名、每个包的 Register_ 函数名（同属包级作用域），
+// 以及 Impls 结构体的字段名（<包标识>_<类型名>，独立的字段作用域）。
+// 标识符一律用 render.go 中的 *Of 函数推导，与生成器共用同一来源。
+// 必须在写任何文件之前调用；冲突时报错带标识符与两处声明位置。
+func checkIdentCollisions(pkgs [][]Candidate) error {
+	scope := map[string]string{}  // 包级标识符 -> 首个声明位置
+	fields := map[string]string{} // Impls 字段名 -> 首个声明位置
+	claim := func(seen map[string]string, ident, pos string) error {
+		if prev, ok := seen[ident]; ok {
+			return fmt.Errorf("generated identifier collision: 生成的标识符 %q 被 %s 与 %s 同时使用，会导致生成代码重复声明；请重命名其中一个函数、方法或类型（或包名）使生成名不同", ident, prev, pos)
+		}
+		seen[ident] = pos
+		return nil
+	}
+	for _, cands := range pkgs {
+		if len(cands) == 0 {
+			continue
+		}
+		if err := claim(scope, registerNameOf(cands[0].PkgName), cands[0].Pos); err != nil {
+			return err
+		}
+		recvSeen := map[string]bool{}
+		for _, c := range cands {
+			for _, id := range []string{handlerNameOf(c), inputTypeOf(c)} {
+				if err := claim(scope, id, c.Pos); err != nil {
+					return err
+				}
+			}
+			if c.Recv != "" && !recvSeen[c.Recv] {
+				recvSeen[c.Recv] = true
+				if err := claim(fields, implFieldOf(c.PkgName, c.Recv), c.Pos); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// recvTypeName 返回接收者类型名；泛型接收者在类型检查后可能无法还原为 Named，此时回退到 AST。
+func recvTypeName(fn *ast.FuncDecl, sig *types.Signature) string {
+	if n := recvNamed(sig); n != nil {
+		return n.Obj().Name()
+	}
+	if fn.Recv != nil && len(fn.Recv.List) > 0 {
+		e := fn.Recv.List[0].Type
+		for {
+			switch x := e.(type) {
+			case *ast.StarExpr:
+				e = x.X
+				continue
+			case *ast.ParenExpr:
+				e = x.X
+				continue
+			case *ast.IndexExpr:
+				e = x.X
+				continue
+			case *ast.IndexListExpr:
+				e = x.X
+				continue
+			case *ast.Ident:
+				return x.Name
+			}
+			break
+		}
+	}
+	return fn.Name.Name
 }

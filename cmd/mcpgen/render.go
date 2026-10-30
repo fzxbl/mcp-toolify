@@ -40,12 +40,12 @@ type toolData struct {
 }
 
 type fileData struct {
-	PkgPath  string
-	PkgName  string
-	PkgIdent string
-	Imports  []string // 额外 import 路径（去重，排序），不含 src/runtime/mcp 等已硬编码项
-	Tools    []toolData
-	Recvs    []string // 方法工具用到的接收者类型名（排序去重）；Register_ 按此追加实例参数
+	PkgPath      string
+	PkgName      string
+	RegisterName string   // registerNameOf(PkgName)
+	Imports      []string // 额外 import 路径（去重，排序），不含 src/runtime/mcp 等已硬编码项
+	Tools        []toolData
+	Recvs        []string // 方法工具用到的接收者类型名（排序去重）；Register_ 按此追加实例参数
 }
 
 func renderPackage(outDir string, cands []Candidate) error {
@@ -55,10 +55,10 @@ func renderPackage(outDir string, cands []Candidate) error {
 	pkgPath := cands[0].Pkg
 	pkgName := cands[0].PkgName
 	fd := fileData{
-		PkgPath:  pkgPath,
-		PkgName:  pkgName,
-		PkgIdent: exportName(pkgName),
-		Recvs:    packageRecvs(cands),
+		PkgPath:      pkgPath,
+		PkgName:      pkgName,
+		RegisterName: registerNameOf(pkgName),
+		Recvs:        packageRecvs(cands),
 	}
 	imps := map[string]struct{}{}
 	for _, c := range cands {
@@ -131,22 +131,44 @@ func recvTools(cands []Candidate) map[string][]string {
 	return out
 }
 
-func buildToolData(c Candidate, srcPkgPath string, imps map[string]struct{}) (toolData, error) {
-	// 生成文件同属 tools 包，不同源包可能有同名函数（如 orders.Get
-	// 与 users.Get），故 input 结构体名带上包名前缀避免重复声明；
-	// 同包不同类型也可能有同名方法（如 (*Orders).List 与 (Users).List），
-	// 故方法工具的标识符再带上接收者类型名，并用 _ 分隔：导出函数名首字母大写，
-	// 包级函数的 <PkgIdent><Name> 不可能在 PkgIdent 后紧跟 _，两类名字因此不相交
-	// （如函数 OrdersGet 与方法 (*Orders).Get）。
+// 以下 *Of 函数是生成标识符的唯一来源：渲染与 checkIdentCollisions 共用，避免两者分歧。
+
+// handlerNameOf 返回候选的 handler 函数名。
+func handlerNameOf(c Candidate) string {
 	ident := c.Name
-	inputType := exportName(c.PkgName) + c.Name + "Input"
 	if c.Recv != "" {
 		ident = c.Recv + "_" + c.Name
-		inputType = exportName(c.PkgName) + "_" + c.Recv + "_" + c.Name + "Input"
 	}
+	return "handle_" + c.PkgName + "_" + ident
+}
+
+// inputTypeOf 返回候选的 input 结构体类型名。
+func inputTypeOf(c Candidate) string {
+	if c.Recv != "" {
+		return exportName(c.PkgName) + "_" + c.Recv + "_" + c.Name + "Input"
+	}
+	return exportName(c.PkgName) + c.Name + "Input"
+}
+
+// registerNameOf 返回包的注册函数名。
+func registerNameOf(pkgName string) string {
+	return "Register_" + exportName(pkgName)
+}
+
+// implFieldOf 返回 Impls 聚合结构体中某接收者实例的字段名。
+func implFieldOf(pkgName, recv string) string {
+	return exportName(pkgName) + "_" + recv
+}
+
+func buildToolData(c Candidate, srcPkgPath string, imps map[string]struct{}) (toolData, error) {
+	// 生成文件同属 tools 包，不同源包可能有同名函数（如 orders.Get
+	// 与 users.Get），故 input 结构体名带上包名前缀；同包不同类型也可能有同名方法，
+	// 故方法工具的标识符再带上接收者类型名。这些名字形式并不能靠分隔符保证互不相交
+	// （如函数 Orders_Get 与方法 (*Orders).Get、混合大小写包名），
+	// 因此由 checkIdentCollisions 在渲染前显式检查全部生成标识符。
 	td := toolData{
-		HandlerName: "handle_" + c.PkgName + "_" + ident,
-		InputType:   inputType,
+		HandlerName: handlerNameOf(c),
+		InputType:   inputTypeOf(c),
 		Recv:        c.Recv,
 	}
 	td.ToolName = toolNameOf(c)
@@ -409,19 +431,19 @@ func typeExpr(t types.Type, srcPkgPath string, imps map[string]struct{}) string 
 
 // pkgInfo 是 all_gen.go 渲染所需的单个源包信息。
 type pkgInfo struct {
-	Ident, PkgPath, PkgName string
-	Recvs                   []string            // 方法工具用到的接收者类型名（已排序）
-	RecvTools               map[string][]string // 接收者 -> 依赖它的工具名（源码顺序）
+	RegisterName, PkgPath, PkgName string
+	Recvs                          []string            // 方法工具用到的接收者类型名（已排序）
+	RecvTools                      map[string][]string // 接收者 -> 依赖它的工具名（源码顺序）
 }
 
 // newPkgInfo 由一个包的候选工具构造 pkgInfo。
 func newPkgInfo(cands []Candidate) pkgInfo {
 	return pkgInfo{
-		Ident:     exportName(cands[0].PkgName),
-		PkgPath:   cands[0].Pkg,
-		PkgName:   cands[0].PkgName,
-		Recvs:     packageRecvs(cands),
-		RecvTools: recvTools(cands),
+		RegisterName: registerNameOf(cands[0].PkgName),
+		PkgPath:      cands[0].Pkg,
+		PkgName:      cands[0].PkgName,
+		Recvs:        packageRecvs(cands),
+		RecvTools:    recvTools(cands),
 	}
 }
 
@@ -431,12 +453,12 @@ type implField struct {
 }
 
 type implPkg struct {
-	Ident string
-	Args  string // 追加在 (s, opts 之后的实参，形如 ", impls.X_Y"
+	RegisterName string
+	Args         string // 追加在 (s, opts 之后的实参，形如 ", impls.X_Y"
 }
 
 type allData struct {
-	Packages []string // 函数-only 模式：包标识
+	Packages []string // 函数-only 模式：各包的 Register_ 函数名
 	HasImpls bool
 	Imports  []struct{ Alias, Path string }
 	Fields   []implField
@@ -452,19 +474,19 @@ func renderAll(outDir string, pkgs []pkgInfo) error {
 	}
 	var d allData
 	for _, p := range pkgs {
-		d.Packages = append(d.Packages, p.Ident)
+		d.Packages = append(d.Packages, p.RegisterName)
 		if len(p.Recvs) > 0 {
 			d.HasImpls = true
 		}
 	}
 	if d.HasImpls {
 		for _, p := range pkgs {
-			ip := implPkg{Ident: p.Ident}
+			ip := implPkg{RegisterName: p.RegisterName}
 			if len(p.Recvs) > 0 {
 				alias := "src_" + p.PkgName // 避免与 fmt/runtime/mcp 等冲突
 				d.Imports = append(d.Imports, struct{ Alias, Path string }{alias, p.PkgPath})
 				for _, r := range p.Recvs {
-					name := p.Ident + "_" + r
+					name := implFieldOf(p.PkgName, r)
 					d.Fields = append(d.Fields, implField{
 						Name: name, Type: "*" + alias + "." + r,
 						Msg: strconv.Quote("tools.Impls." + name + " 为 nil：工具 " + strings.Join(p.RecvTools[r], ", ") + " 需要它"),
