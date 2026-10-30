@@ -25,7 +25,7 @@ The basic flow is:
     ↓ go generate
 wrapper, input struct, JSON Schema, RegisterAll
     ↓
-toolify.New(..., tools.RegisterAll)
+toolify.New(..., tools.RegisterAll)   // or tools.NewRegistrar(...) when method tools exist
     ↓
 Start(ctx) or Handlers()
 ```
@@ -123,7 +123,7 @@ The runnable example is under [`example/`](./example).
 
 Annotations are written in the godoc comment of an exported function:
 
-- `mcp:tool`: expose the function as an MCP tool.
+- `mcp:tool`: expose the function (or a method of an exported type) as an MCP tool. A leading `context.Context` parameter receives the request context and is not part of the schema. Method tools need a host-supplied instance via `tools.NewRegistrar(tools.Impls{...})` (which replaces `RegisterAll`).
 - `mcp:name=<name>`: override the default name, which is `<package>.<function_name>` in snake case.
 - `mcp:labels=k=v,k2=v2`: attach opaque labels used by registration filters, token admission, and plugins.
 - `mcp:bind=<param>:<Type>`: bind an interface parameter to a concrete type that can be built from JSON.

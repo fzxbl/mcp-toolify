@@ -26,7 +26,7 @@
     ↓ go generate
 生成 wrapper、输入 struct、JSON Schema、RegisterAll
     ↓
-toolify.New(..., tools.RegisterAll)
+toolify.New(..., tools.RegisterAll)   // 含方法工具时改用 tools.NewRegistrar(...)
     ↓
 Start(ctx) 或 Handlers()
 ```
@@ -117,7 +117,7 @@ curl -sS localhost:8011 \
 
 注解写在导出函数的 godoc 中：
 
-- `mcp:tool`：将函数暴露为工具。
+- `mcp:tool`：将函数（或导出类型的方法）暴露为工具。首个 `context.Context` 参数接收请求 ctx，不进入 schema。方法工具需要宿主经 `tools.NewRegistrar(tools.Impls{...})` 提供实例（此时不再生成 `RegisterAll`）。
 - `mcp:name=<name>`：覆盖默认工具名；默认格式为 `<包名>.<函数名 snake_case>`。
 - `mcp:labels=k=v,k2=v2`：声明不透明 labels，供注册过滤、token 准入和插件使用。
 - `mcp:bind=<param>:<Type>`：将接口参数绑定到可由 JSON 构造的具体类型。

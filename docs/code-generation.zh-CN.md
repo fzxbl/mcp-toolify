@@ -97,6 +97,72 @@ func Apply(patch interface{}) error { /* ... */ }
 绑定不会产生输入字段。绑定类型必须能在生成文件中编译。非空接口若未绑定通常不能
 由 JSON Schema/反射正确构造，属于不支持的输入，应改为具体类型或显式绑定。
 
+## ctx 参数
+
+函数或方法的第一个参数类型为 `context.Context`（参数名写成 `_` 也可以）时，生成的 handler 会把本次请求的 ctx 传给它。该参数不进入输入 struct 和 JSON Schema，不需要 `param:` 说明，也不算「参数无名」。传入的就是 handler 收到的 ctx：宿主在 `Mount` 外层放入的值、logid（`runtime.LogIDFromContext`）、调用人（`runtime.SubjectFromContext`）、请求头（`runtime.HeadersFromContext`）。本文档不对取消语义做承诺。
+
+`context.Context` 出现在非第一个位置会导致生成失败。
+
+## 方法工具
+
+`mcp:tool` 也可写在导出命名类型的方法上，值接收者 `(t T)` 与指针接收者 `(t *T)` 均可，`T` 的底层类型不限。默认工具名为 `<包名>.<方法名 snake_case>`（不含类型名），`mcp:name` 仍然优先。方法工具绑定在宿主提供的实例上；不需要状态的工具请写成包级函数。
+
+任一配置的包含方法工具时，`all_gen.go` 为每个接收者类型生成一个字段，字段名 `<PkgIdent>_<RecvType>`，类型统一为 `*<pkg>.<RecvType>`（值、指针接收者都一样），并生成 `NewRegistrar`；此时**不再生成** `RegisterAll`：
+
+```go
+// all_gen.go（生成）
+type Impls struct {
+	Greeter_Desk *src_greeter.Desk
+}
+
+func NewRegistrar(impls Impls) (runtime.Registrar, error)
+```
+
+可运行示例在 `example/greeter` 中定义接收者和带 ctx 的方法：
+
+```go
+type Desk struct{ Greeting string }
+
+// mcp:tool
+func (d *Desk) Welcome(ctx context.Context, name string) (string, error) { /* ... */ }
+```
+
+宿主在装配时交入实例：
+
+```go
+reg, err := tools.NewRegistrar(tools.Impls{
+	Greeter_Desk: &greeter.Desk{Greeting: "Welcome"},
+})
+if err != nil { return err }
+r := toolify.New(cfg, reg)
+```
+
+实例约定：
+
+* 实例由宿主创建，也由宿主关闭（例如 `defer db.Close()`）；toolify 不创建、不关闭。
+* 一个接收者类型对应一个实例，所有请求共用。
+* 方法会被并发调用，实例上不要放按请求变化的可变状态。
+* 字段为 nil 时 `NewRegistrar` 返回 error，如 `tools.Impls.Greeter_Desk 为 nil：工具 greeter.welcome 需要它`（工具名按源码顺序）。该检查与 `Enable` / `Match` 无关：即使用到它的工具都被过滤掉，实例仍然必填。
+
+只有包级函数的包不受影响：`<package>_gen.go` 与 `RegisterAll` 的生成结果与之前完全一致。含方法工具的包，其 `Register_<Pkg>` 为每个接收者类型多一个 `*<pkg>.<RecvType>` 参数，按类型名排序。
+
+## 生成期报错
+
+下列写法在生成阶段直接报错，信息带 `file:line`，包级函数和方法一视同仁（报错中的英文关键短语如下）：
+
+| 写法 | 报错包含 | 替代写法 |
+| --- | --- | --- |
+| 未导出的函数或方法 | `unexported function` | 导出它。 |
+| 泛型函数 | `generic function` | 写一个非泛型的包装函数。 |
+| 可变参数 | `variadic parameter` | 改成切片参数。 |
+| 参数无名或为 `_`（首位 ctx 除外） | `unnamed parameter` | 给参数命名。 |
+| 两个参数首字母大写或 snake_case 后字段名/JSON 名相同 | `parameter name collision` | 改参数名。 |
+| `context.Context` 不在第一位 | `context.Context must be the first parameter` | 移到第一个参数。 |
+| 接收者类型未导出 | `unexported receiver type` | 导出该类型，或改成包级函数。 |
+| 泛型接收者 | `generic receiver type` | 改用非泛型的包装类型。 |
+| 配置的两个包包名相同 | `duplicate package name` | 重命名其中一个包；一次运行内包名必须唯一。 |
+| 最终工具名重复（跨所有包，已计入 `mcp:name`） | `duplicate tool name` | 用 `mcp:name=` 重命名其中一个。 |
+
 ## 返回值、error 和生成文件
 
 wrapper 的 handler 直接调用源函数。返回值规则如下：

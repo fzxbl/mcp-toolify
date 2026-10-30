@@ -77,6 +77,72 @@ func Apply(patch interface{}) error { /* ... */ }
 
 `mcp:bind` does not infer external imports and does not check whether the binding name corresponds to a parameter; an unmatched binding generates no input field. The binding type must compile in the generated file. A non-empty interface without a binding generally cannot be constructed correctly by JSON Schema/reflection and is unsupported input; use a concrete type or an explicit binding.
 
+## Context parameter
+
+If the first parameter has type `context.Context` (a name of `_` is also accepted), the generated handler passes the request context to it. This parameter is not part of the input struct or JSON Schema, takes no `param:` description, and does not count as an unnamed parameter. The context is the one the handler received: values the host placed around `Mount`, the logid (`runtime.LogIDFromContext`), the caller (`runtime.SubjectFromContext`), and the request headers (`runtime.HeadersFromContext`). This document makes no promise about cancellation semantics.
+
+`context.Context` anywhere other than the first position is a generation error.
+
+## Method tools
+
+`mcp:tool` also works on methods of exported named types, with either a value receiver `(t T)` or a pointer receiver `(t *T)`; the underlying type of `T` is not restricted. The default tool name is `<package>.<method_name_snake_case>` (the type name is not included); `mcp:name` still takes precedence. A method tool is bound to an instance supplied by the host, so a tool that needs no state should be written as a package function instead.
+
+When any configured package contains a method tool, `all_gen.go` exposes one field per receiver type, named `<PkgIdent>_<RecvType>` with type `*<pkg>.<RecvType>` (for both value and pointer receivers), and `NewRegistrar`; `RegisterAll` is **not** generated in that case:
+
+```go
+// all_gen.go (generated)
+type Impls struct {
+	Greeter_Desk *src_greeter.Desk
+}
+
+func NewRegistrar(impls Impls) (runtime.Registrar, error)
+```
+
+The runnable example defines the receiver and a ctx-aware method in `example/greeter`:
+
+```go
+type Desk struct{ Greeting string }
+
+// mcp:tool
+func (d *Desk) Welcome(ctx context.Context, name string) (string, error) { /* ... */ }
+```
+
+and the host passes the instance when assembling the server:
+
+```go
+reg, err := tools.NewRegistrar(tools.Impls{
+	Greeter_Desk: &greeter.Desk{Greeting: "Welcome"},
+})
+if err != nil { return err }
+r := toolify.New(cfg, reg)
+```
+
+Instance contract:
+
+* The host creates the instance and closes it (for example `defer db.Close()`); toolify neither constructs nor closes it.
+* There is one instance per receiver type, shared by all requests.
+* Methods are called concurrently. Do not keep per-request mutable state on the instance.
+* A nil field makes `NewRegistrar` return an error such as `tools.Impls.Greeter_Desk 为 nil：工具 greeter.welcome 需要它` (tool names in source order). The check is independent of `Enable` / `Match`: the instance is required even if every tool that uses it is filtered out.
+
+Packages that contain only package functions are unchanged: their `<package>_gen.go` and `RegisterAll` are generated exactly as before. `Register_<Pkg>` of a package with method tools takes one extra `*<pkg>.<RecvType>` argument per receiver type, sorted by type name.
+
+## Generation-time errors
+
+The following are rejected at generation time, with `file:line` in the message, for package functions and methods alike (the English key phrase is part of the message):
+
+| Written as | Error contains | Instead |
+| --- | --- | --- |
+| Unexported function or method | `unexported function` | Export it. |
+| Generic function | `generic function` | Write a non-generic wrapper. |
+| Variadic parameter | `variadic parameter` | Use a slice parameter. |
+| Unnamed or `_` parameter (other than a leading ctx) | `unnamed parameter` | Name the parameter. |
+| Two parameters with the same field/JSON name after capitalization or snake_case | `parameter name collision` | Rename a parameter. |
+| `context.Context` not first | `context.Context must be the first parameter` | Move it to the first position. |
+| Unexported receiver type | `unexported receiver type` | Export the type, or use a package function. |
+| Generic receiver type | `generic receiver type` | Use a non-generic wrapper type. |
+| Two configured packages with the same package name | `duplicate package name` | Rename one package; names must be unique within a run. |
+| Two tools with the same final name (across all packages, after `mcp:name`) | `duplicate tool name` | Rename one with `mcp:name=`. |
+
 ## Return values, errors, and generated files
 
 The wrapper handler calls the source function directly. Return-value rules:
