@@ -144,7 +144,7 @@ r := toolify.New(cfg, reg)
 * 方法会被并发调用，实例上不要放按请求变化的可变状态。
 * 字段为 nil 时 `NewRegistrar` 返回 error，如 `tools.Impls.Greeter_Desk 为 nil：工具 greeter.welcome 需要它`（工具名按源码顺序）。该检查与 `Enable` / `Match` 无关：即使用到它的工具都被过滤掉，实例仍然必填。
 
-只有包级函数的包不受影响：`<package>_gen.go` 与 `RegisterAll` 的生成结果与之前完全一致。含方法工具的包，其 `Register_<Pkg>` 为每个接收者类型多一个 `*<pkg>.<RecvType>` 参数，按类型名排序。
+只有包级函数的包，其自身的 `<package>_gen.go` 不变。`RegisterAll` 仅在所有配置的包都没有方法工具时才照旧生成（与之前一致）；否则由 `NewRegistrar` 取代它。含方法工具的包，其 `Register_<Pkg>` 为每个接收者类型多一个 `*<pkg>.<RecvType>` 参数，按类型名排序。
 
 ## 生成期报错
 
@@ -162,6 +162,7 @@ r := toolify.New(cfg, reg)
 | 泛型接收者 | `generic receiver type` | 改用非泛型的包装类型。 |
 | 配置的两个包包名相同 | `duplicate package name` | 重命名其中一个包；一次运行内包名必须唯一。 |
 | 最终工具名重复（跨所有包，已计入 `mcp:name`） | `duplicate tool name` | 用 `mcp:name=` 重命名其中一个。 |
+| 生成的标识符（handler、input 类型、`Register_<Pkg>`、`Impls` 字段）重复，例如函数 `Orders_Get` 与方法 `(*Orders).Get` | `generated identifier collision` | 重命名其中一个函数、方法或类型（或包名），使生成名不同。 |
 
 ## 返回值、error 和生成文件
 

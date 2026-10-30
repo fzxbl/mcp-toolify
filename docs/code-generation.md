@@ -124,7 +124,7 @@ Instance contract:
 * Methods are called concurrently. Do not keep per-request mutable state on the instance.
 * A nil field makes `NewRegistrar` return an error such as `tools.Impls.Greeter_Desk 为 nil：工具 greeter.welcome 需要它` (tool names in source order). The check is independent of `Enable` / `Match`: the instance is required even if every tool that uses it is filtered out.
 
-Packages that contain only package functions are unchanged: their `<package>_gen.go` and `RegisterAll` are generated exactly as before. `Register_<Pkg>` of a package with method tools takes one extra `*<pkg>.<RecvType>` argument per receiver type, sorted by type name.
+A package that contains only package functions keeps its own `<package>_gen.go` unchanged. `RegisterAll` is generated exactly as before only when no configured package has method tools; otherwise `NewRegistrar` replaces it. `Register_<Pkg>` of a package with method tools takes one extra `*<pkg>.<RecvType>` argument per receiver type, sorted by type name.
 
 ## Generation-time errors
 
@@ -142,6 +142,7 @@ The following are rejected at generation time, with `file:line` in the message, 
 | Generic receiver type | `generic receiver type` | Use a non-generic wrapper type. |
 | Two configured packages with the same package name | `duplicate package name` | Rename one package; names must be unique within a run. |
 | Two tools with the same final name (across all packages, after `mcp:name`) | `duplicate tool name` | Rename one with `mcp:name=`. |
+| Two generated identifiers (handler, input type, `Register_<Pkg>`, or `Impls` field) are the same, e.g. function `Orders_Get` and method `(*Orders).Get` | `generated identifier collision` | Rename one of the functions, methods or types (or a package) so the generated names differ. |
 
 ## Return values, errors, and generated files
 
