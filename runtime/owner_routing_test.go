@@ -10,6 +10,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // unreadableBody 的 Read 一定失败：用它区分「基座读了 body」与「基座根本没读」——
@@ -443,5 +447,127 @@ func TestProxyToOwnerFailureIsNotFoundWithoutTopology(t *testing.T) {
 	}
 	if body := rec.Body.String(); strings.Contains(body, dead) {
 		t.Errorf("转发失败的响应泄漏了属主地址: %q", body)
+	}
+}
+
+// ownerSeen 是属主副本 handler 看到的 trace 相关信息。
+type ownerSeen struct {
+	traceparent, testTrace, logID string
+}
+
+// forwardFixture 起一个属主副本（外面套 HTTPTrace，与真实部署一致），并返回把 demo_tool
+// 调用转发给它的入口 handler（同样套 HTTPTrace）与那条请求体。
+func forwardFixture(t *testing.T, seen *ownerSeen) (entry http.Handler, owner string, body string) {
+	t.Helper()
+	ownerSrv := httptest.NewServer(HTTPTrace("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.traceparent = r.Header.Get("traceparent")
+		seen.testTrace = r.Header.Get(testTraceHeader)
+		seen.logID = LogIDFromContext(r.Context())
+		io.WriteString(w, `{"proxied":true}`)
+	})))
+	t.Cleanup(ownerSrv.Close)
+	return forwardFixtureTo(t, hostOf(t, ownerSrv.URL))
+}
+
+func forwardFixtureTo(t *testing.T, owner string) (http.Handler, string, string) {
+	t.Helper()
+	SetSelfAddr("10.9.9.9:1")
+	t.Cleanup(func() { SetSelfAddr("") })
+	SetPeers([]string{owner})
+	t.Cleanup(func() { SetPeers(nil) })
+	RegisterOwnerRouted("demo_tool", "id")
+	t.Cleanup(ResetOwnerRoutedForTest)
+	local := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"local":true}`) })
+	body := `{"method":"tools/call","params":{"name":"demo_tool","arguments":{"id":"` + newIDForOwner(owner) + `"}}}`
+	return HTTPTrace("/", withMCPOwnerRouting(local)), owner, body
+}
+
+func forward(entry http.Handler, body string, header http.Header) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	for k, v := range header {
+		req.Header[k] = v
+	}
+	rec := httptest.NewRecorder()
+	entry.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestProxyToOwnerPropagatesTrace(t *testing.T) {
+	exp := installTestProvider(t)
+	var seen ownerSeen
+	entry, owner, body := forwardFixture(t, &seen)
+	rec := forward(entry, body, http.Header{"Traceparent": {upTraceparent}})
+
+	if seen.logID != upTraceID {
+		t.Fatalf("owner trace-id = %q, want upstream %q", seen.logID, upTraceID)
+	}
+	var client *tracetest.SpanStub
+	for _, s := range exp.GetSpans() {
+		if s.SpanKind == trace.SpanKindClient {
+			client = &s
+		}
+	}
+	if client == nil {
+		t.Fatal("no client span for owner forwarding")
+	}
+	if client.Name != "owner forward" {
+		t.Errorf("client span name = %q", client.Name)
+	}
+	if !strings.Contains(seen.traceparent, "-"+client.SpanContext.SpanID().String()+"-") {
+		t.Errorf("owner traceparent %q does not name client span %s as parent", seen.traceparent, client.SpanContext.SpanID())
+	}
+	var addr string
+	for _, kv := range client.Attributes {
+		if kv.Key == "server.address" {
+			addr = kv.Value.AsString()
+		}
+	}
+	if addr != owner {
+		t.Errorf("server.address = %q, want %q", addr, owner)
+	}
+	if vs := rec.Result().Header.Values(traceResponseHeader); len(vs) != 1 || !strings.Contains(vs[0], upTraceID) {
+		t.Errorf("traceresponse = %v, want exactly one carrying %s", vs, upTraceID)
+	}
+}
+
+func TestProxyToOwnerPropagatesTraceNoop(t *testing.T) {
+	var seen ownerSeen
+	entry, _, body := forwardFixture(t, &seen)
+	rec := forward(entry, body, nil)
+	tr := rec.Header().Get(traceResponseHeader)
+	if !traceIDRe.MatchString(seen.logID) || !strings.Contains(tr, seen.logID) {
+		t.Fatalf("owner trace-id = %q, entry traceresponse = %q: want same id", seen.logID, tr)
+	}
+}
+
+func TestProxyToOwnerGlobalPropagator(t *testing.T) {
+	installTestProvider(t)
+	useTestPropagator(t)
+	var seen ownerSeen
+	entry, _, body := forwardFixture(t, &seen)
+	rec := forward(entry, body, nil)
+	if seen.testTrace == "" || !strings.Contains(rec.Header().Get(traceResponseHeader), seen.testTrace) {
+		t.Fatalf("owner %s = %q, want entry trace-id", testTraceHeader, seen.testTrace)
+	}
+}
+
+func TestProxyToOwnerFailureMarksSpan(t *testing.T) {
+	exp := installTestProvider(t)
+	entry, _, body := forwardFixtureTo(t, "127.0.0.1:1") // 保留端口，必然拒连
+	rec := forward(entry, body, nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	var client *tracetest.SpanStub
+	for _, s := range exp.GetSpans() {
+		if s.SpanKind == trace.SpanKindClient {
+			client = &s
+		}
+	}
+	if client == nil || client.Status.Code != codes.Error {
+		t.Fatalf("client span = %+v, want Error status", client)
+	}
+	if vs := rec.Result().Header.Values(traceResponseHeader); len(vs) != 1 {
+		t.Errorf("traceresponse = %v, want exactly one", vs)
 	}
 }

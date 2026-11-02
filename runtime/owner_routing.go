@@ -10,6 +10,11 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // OwnerOf 的实现见 ownerid.go：从 id 内嵌的 owner-seg 解出属主 host:port。
@@ -278,9 +283,21 @@ func ownerFromCall(body []byte) (string, bool) {
 //
 // 每次转发都记一行：跨副本转发在本副本原本不留任何痕迹，「这个回调/下载到底去哪了」
 // 只能去属主侧翻日志。带上 logid，好和属主那边的同一条请求对起来。
+//
+// 转发是请求离开本副本的一跳：建 client span，并把 trace 上下文注入转发请求，属主副本据此
+// 接上同一条 trace（日志 id 也就一致）。入站带来的 trace 头先删掉：下一跳的父 span 必须是
+// 这次的 client span，而不是上游。
 func proxyToOwner(w http.ResponseWriter, r *http.Request, owner string, body []byte) {
 	logf(r.Context(), slog.LevelInfo, "[mcp] owner routing: %s %s → 属主副本 %s",
 		r.Method, r.URL.Path, owner)
+	ctx, span := tracer().Start(r.Context(), "owner forward",
+		trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(
+			attribute.String("server.address", owner),
+			attribute.String("http.request.method", r.Method),
+			attribute.String("url.path", r.URL.Path),
+		))
+	defer span.End()
+	r = r.WithContext(ctx)
 	target := &url.URL{Scheme: "http", Host: owner}
 	rp := &httputil.ReverseProxy{
 		FlushInterval: -1, // 立即冲刷，支持 text/event-stream
@@ -289,12 +306,28 @@ func proxyToOwner(w http.ResponseWriter, r *http.Request, owner string, body []b
 			req.URL.Host = target.Host
 			req.Host = target.Host
 			req.Header.Set(ownerForwardedHeader, "1")
+			prop := outboundPropagator()
+			for _, f := range prop.Fields() {
+				req.Header.Del(f)
+			}
+			prop.Inject(req.Context(), propagation.HeaderCarrier(req.Header))
 			if body != nil {
 				req.Body = io.NopCloser(bytes.NewReader(body))
 				req.ContentLength = int64(len(body))
 			}
 		},
+		// 属主自己也回写 traceresponse；本副本的 HTTPTrace 已经写过一份，不删就是两份。
+		ModifyResponse: func(resp *http.Response) error {
+			resp.Header.Del(traceResponseHeader)
+			span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
+			if resp.StatusCode >= 500 {
+				span.SetStatus(codes.Error, http.StatusText(resp.StatusCode))
+			}
+			return nil
+		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "转发到属主副本失败")
 			logf(r.Context(), slog.LevelWarn, "[mcp] owner routing: 转发 %s 到属主副本 %s 失败: %v",
 				r.URL.Path, owner, err)
 			http.NotFound(w, r)
