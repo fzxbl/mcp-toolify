@@ -45,6 +45,13 @@ type Config struct {
 	// nil 时转给 slog.Default()，未设置 slog 时即标准库 log。
 	// 进程级生效：NewRegistry 时设置，与 SelfAddr 等一样后构造者覆盖前者。
 	Logger Logger `toml:"-"`
+	// Name 是 initialize 时返回给客户端的 serverInfo.name。为空时取主模块路径的
+	// 最后一段（github.com/acme/order-mcp → order-mcp）。
+	Name string `toml:"-"`
+	// Version 是 serverInfo.version。为空时取 go build 写入的主模块版本（VCS tag，
+	// 没有 tag 时是带 commit id 的伪版本）；读不到时为 "(devel)" 并在启动时告警。
+	// 构建目录里没有 .git 时，可用 -ldflags -X 注入宿主自己的变量再传给这里。
+	Version string `toml:"-"`
 }
 
 // Registrar 是生成代码暴露的注册函数类型（通常是生成的 tools.RegisterAll）。

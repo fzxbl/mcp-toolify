@@ -71,11 +71,24 @@ type Registry struct {
 func NewRegistry(cfg Config) *Registry {
 	// 最先设置：New 紧接着就会打工具注册摘要，插件 Install 期也会打日志。
 	SetLogger(cfg.Logger)
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		bi = nil
+	}
+	id := resolveServerIdentity(cfg, bi)
+	logf(context.Background(), slog.LevelInfo, "[mcp] server: name=%q version=%q toolify=%s",
+		id.Name, id.Version, id.Toolify)
+	if id.VersionUnknown {
+		// 客户端看到的版本没有意义，但 go run 本地调试就是这个形态，不能因此起不来。
+		logf(context.Background(), slog.LevelWarn,
+			"[mcp] server: 未能从构建信息获取版本，客户端看到的 version 为 %q；请设置 Config.Version，或在含 .git 的目录下 go build",
+			id.Version)
+	}
 	r := &Registry{
 		cfg: cfg,
 		srv: mcp.NewServer(&mcp.Implementation{
-			Name:    "mcp-toolify",
-			Version: "0.1.0",
+			Name:    id.Name,
+			Version: id.Version,
 		}, nil),
 		routes:       map[string]http.Handler{},
 		publicRoutes: map[string]http.Handler{},
