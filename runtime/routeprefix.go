@@ -89,6 +89,14 @@ func currentRoutePrefix() string {
 	return routePrefix
 }
 
+// mcpRoute 返回 MCP 端点的挂载路径（Mount 的 prefix，挂在根上时为 "/"），用作 span 名。
+func mcpRoute() string {
+	if p := strings.TrimSuffix(currentRoutePrefix(), pluginSubPrefix); p != "" {
+		return p
+	}
+	return "/"
+}
+
 // RoutePath 把插件自己的 pattern 换算成对外的绝对路径。
 // 插件凡是要说出「这个端点在哪」的地方都用它：副本间转发的目标路径、日志。
 // 直接用 pattern 等于假设挂在根上。未声明前缀时补的是空串，与「挂在根上」同一条路径。

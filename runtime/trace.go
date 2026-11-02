@@ -64,6 +64,12 @@ func LogIDFromContext(ctx context.Context) string {
 // 格式不合法的 traceparent 由 propagator 丢弃，等同未携带：W3C 格式严格，
 // 不存在往 key=value 日志里注入字段的余地，所以不需要额外校验或告警。
 func HTTPTrace(route string, next http.Handler) http.Handler {
+	return httpTraceRoute(func() string { return route }, next)
+}
+
+// httpTraceRoute 是 HTTPTrace 的内部形态：route 在请求时求值。MCP 端点要用它——
+// build 时挂载前缀可能还没定（Start 不经 Mount），请求到达时前缀必然已经生效。
+func httpTraceRoute(route func() string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		if sc := trace.SpanContextFromContext(ctx); sc.IsValid() && !sc.IsRemote() {
@@ -81,7 +87,7 @@ func HTTPTrace(route string, next http.Handler) http.Handler {
 		if addr := SelfHostPort(); addr != "" {
 			attrs = append(attrs, attribute.String("server.address", addr))
 		}
-		ctx, span := tracer().Start(ctx, r.Method+" "+route,
+		ctx, span := tracer().Start(ctx, r.Method+" "+route(),
 			trace.WithSpanKind(trace.SpanKindServer), trace.WithAttributes(attrs...))
 		defer span.End()
 		if !trace.SpanContextFromContext(ctx).IsValid() {

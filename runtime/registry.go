@@ -269,11 +269,12 @@ func (r *Registry) RoutePublic(pattern string, h http.Handler) {
 // 每条路由都再套一层 WithPathOwnerRouting：插件路由上的 id 常常是有归属的
 // （如 spill 的 /spill/<id>），而资源只存在于产出它的那个副本。少了这一层，
 // 多副本部署下「请求被负载均衡打到别的副本」就是一次静默失败。
-// 顺序与 MCP 端点一致（认证在外、owner 路由在内）：反代出去的请求会被属主再认证一次。
+// 顺序与 MCP 端点一致（trace 最外、认证其次、owner 路由在内）：反代出去的请求会被属主再认证一次；
+// trace 在最外，401 与转发也带 trace-id。
 func (r *Registry) Routes() map[string]http.Handler {
 	out := make(map[string]http.Handler, len(r.routes)+len(r.publicRoutes))
 	for pattern, h := range r.publicRoutes {
-		out[RoutePath(pattern)] = WithPathOwnerRouting(h)
+		out[RoutePath(pattern)] = HTTPTrace(RoutePath(pattern), WithPathOwnerRouting(h))
 	}
 	if len(r.routes) == 0 {
 		return out
@@ -285,7 +286,7 @@ func (r *Registry) Routes() map[string]http.Handler {
 		return out
 	}
 	for pattern, h := range r.routes {
-		out[RoutePath(pattern)] = r.az.HTTPMiddleware(WithPathOwnerRouting(h))
+		out[RoutePath(pattern)] = HTTPTrace(RoutePath(pattern), r.az.HTTPMiddleware(WithPathOwnerRouting(h)))
 	}
 	return out
 }
@@ -590,7 +591,7 @@ func (r *Registry) buildOnceBody() (http.Handler, error) {
 		&mcp.StreamableHTTPOptions{Stateless: true},
 	)
 	// owner 路由在认证之内：转发前请求已通过认证，属主副本会再认证一次。
-	return HTTPTrace("/", HTTPHeaders(r.az.HTTPMiddleware(withMCPOwnerRouting(h)))), nil
+	return httpTraceRoute(mcpRoute, HTTPHeaders(r.az.HTTPMiddleware(withMCPOwnerRouting(h)))), nil
 }
 
 // Handlers 返回可挂载到既有 HTTP server 的 MCP handler 与插件注册的路由。

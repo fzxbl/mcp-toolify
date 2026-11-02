@@ -15,7 +15,7 @@ import (
 // MountFunc 是宿主把一条路由挂到自己 router 上的动作。
 //
 // pattern 是**对外绝对路径**（基座已按挂载前缀算好），h 已经包好基座该包的一切
-// （token 认证、logid、owner 路由）。宿主只负责按自己 router 的写法挂上去，例如：
+// （trace、token 认证、owner 路由）。宿主只负责按自己 router 的写法挂上去，例如：
 //
 //	// net/http
 //	func(pattern string, h http.Handler) { mux.Handle(pattern, h) }

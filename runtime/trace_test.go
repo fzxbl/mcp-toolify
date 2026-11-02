@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
 
 	"go.opentelemetry.io/otel"
@@ -242,5 +243,64 @@ func TestHTTPTraceHonorsGlobalPropagator(t *testing.T) {
 	req.Header.Set(testTraceHeader, upTraceID)
 	if got, _ := serveTrace(t, req, nil); got != upTraceID {
 		t.Fatalf("trace-id = %q, want %q from global propagator", got, upTraceID)
+	}
+}
+
+// mountForTrace 在 /mcp 下挂一条 Route（/spill/）与一条 RoutePublic（/confirm），
+// 返回宿主拿到的 pattern → handler。路由 handler 记录自己看到的 trace-id。
+func mountForTrace(t *testing.T, seen map[string]string) map[string]http.Handler {
+	t.Helper()
+	resetRoutePrefix(t)
+	r := New(Config{ConfigPath: writeTokenConfig(t, okTokenConfig)}, nil)
+	t.Cleanup(func() { r.RunStop(context.Background()) })
+	record := func(name string) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			seen[name] = LogIDFromContext(req.Context())
+		})
+	}
+	r.Route("/spill/", record("route"))
+	r.RoutePublic("/confirm", record("public"))
+	mounted := map[string]http.Handler{}
+	if err := r.Mount("/mcp", func(p string, h http.Handler) { mounted[p] = h }); err != nil {
+		t.Fatalf("Mount: %v", err)
+	}
+	return mounted
+}
+
+func TestRoutesCarryTraceID(t *testing.T) {
+	seen := map[string]string{}
+	mounted := mountForTrace(t, seen)
+	for name, path := range map[string]string{"route": "/mcp/plugin/spill/x", "public": "/mcp/plugin/confirm"} {
+		pattern := strings.TrimSuffix(path, "x")
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer t-ro")
+		rec := httptest.NewRecorder()
+		mounted[pattern].ServeHTTP(rec, req)
+		if !traceIDRe.MatchString(seen[name]) {
+			t.Errorf("%s: trace-id in route = %q, want 32-hex", name, seen[name])
+		}
+		if rec.Header().Get(traceResponseHeader) == "" {
+			t.Errorf("%s: traceresponse missing", name)
+		}
+	}
+}
+
+func TestMCPEndpointSpanName(t *testing.T) {
+	exp := installTestProvider(t)
+	mounted := mountForTrace(t, map[string]string{})
+	mounted["/mcp"].ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/mcp", nil))
+	if spans := exp.GetSpans(); len(spans) != 1 || spans[0].Name != "POST /mcp" {
+		t.Fatalf("spans = %d, want 1 named \"POST /mcp\"", len(spans))
+	}
+}
+
+func TestPluginRouteSpanName(t *testing.T) {
+	exp := installTestProvider(t)
+	mounted := mountForTrace(t, map[string]string{})
+	req := httptest.NewRequest(http.MethodGet, "/mcp/plugin/spill/abc", nil)
+	req.Header.Set("Authorization", "Bearer t-ro")
+	mounted["/mcp/plugin/spill/"].ServeHTTP(httptest.NewRecorder(), req)
+	if spans := exp.GetSpans(); len(spans) != 1 || spans[0].Name != "GET /mcp/plugin/spill/" {
+		t.Fatalf("spans = %+v, want 1 named \"GET /mcp/plugin/spill/\"", len(spans))
 	}
 }
