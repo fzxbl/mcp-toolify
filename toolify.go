@@ -1,7 +1,7 @@
 // Package toolify 把带 `// mcp:tool` 标记的 Go 函数暴露为 MCP（Model Context
 // Protocol）工具。生成器（cmd/mcpgen）扫描注解生成 wrapper 代码，本包提供把这些
 // wrapper 组装成一个 HTTP MCP server 的最小基座：MCP 协议、带不透明 labels 的工具
-// 注册表、label selector 引擎、token 认证与准入、logid、owner 路由和一条中间件链。
+// 注册表、label selector 引擎、token 认证与准入、W3C trace context、owner 路由和一条中间件链。
 //
 // 审计、大结果落盘（spill）、配额、二次确认等能力都是独立插件，按需 Install；
 // 不 Install 的插件不进编译产物。

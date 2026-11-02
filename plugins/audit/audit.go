@@ -171,7 +171,7 @@ func (s Section) normalize() (Section, error) {
 type Event struct {
 	// At 是调用进入 audit 的时刻。
 	At time.Time
-	// LogID 与 HTTP 层回写的同名响应头一致，用于和宿主 access log 对账。
+	// LogID 是本次请求的 W3C trace-id（与 traceresponse 响应头一致），用于和宿主日志、链路对账。
 	LogID string
 	// Method 是 MCP 方法名，tools/call、tools/list 之外还包括 initialize、ping、
 	// notifications/*，落地方可据此过滤。

@@ -98,7 +98,7 @@ r.RunStop(context.Background())
 | `Args` | `tools/call` 的原始 JSON 参数 | 可写，执行终点使用改写后的值；交给其他组件前应防御性拷贝 |
 | `Headers` | HTTP 请求头快照 | 只读契约；已剔除凭据，插件不得修改，也不应从原始请求另取凭据 |
 | `Subject` | token 鉴权阶段解析的调用主体 | 可读；`ID` 默认空，`Token` 是 token 用途名而非 token 原文；按人策略须拒绝空身份 |
-| `LogID` | HTTP logid 层生成或接收的请求标识 | 可读，用于关联请求和日志 |
+| `LogID` | 本次请求的 W3C trace-id（32 位小写十六进制），沿用宿主 span 或上游 `traceparent`，否则自生成 | 可读，用于关联请求和日志 |
 | `Meta` | runtime 创建或由插件写入的插件通信 map | 可写；跨插件固定键使用基座常量，私有键加 `<插件名>.` 前缀 |
 | `Tools` | 基座注入的工具查询函数 | 可调用但调用前必须判空；用于需要读取工具清单的插件逻辑 |
 

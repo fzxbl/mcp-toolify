@@ -12,7 +12,7 @@ English | [简体中文](README.zh-CN.md)
 
 - **Annotation-driven generation**: add `// mcp:tool` to an exported function, run `go generate`, and generate a typed wrapper, input struct, JSON Schema, and registration code.
 - **No reflection at runtime**: generated wrappers call the target function directly; signature changes are reported by the compiler.
-- **Shared runtime**: Streamable HTTP, tool registration, token authentication, selector admission, logids, owner routing, and middleware are provided in one runtime.
+- **Shared runtime**: Streamable HTTP, tool registration, token authentication, selector admission, W3C trace context, owner routing, and middleware are provided in one runtime.
 - **Plugin policies**: auditing, large-result storage, and deployment-specific policies are installed as plugins rather than built into the base.
 - **Deployment options**: run independently, mount into another HTTP server, or deploy multiple replicas.
 

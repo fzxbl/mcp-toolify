@@ -4,7 +4,7 @@
 
 返回[根 README](../README.zh-CN.md)。
 
-运行时包提供 `Registry`、HTTP MCP handler、token 认证、label 准入、logid、插件
+运行时包提供 `Registry`、HTTP MCP handler、token 认证、label 准入、W3C trace context、插件
 中间件和插件 HTTP 路由。插件安装完成后，基座在接收请求前完成配置与注册校验。
 
 ## 配置
@@ -71,7 +71,7 @@ r := toolify.New(toolify.Config{ConfigPath: "mcp.toml", Logger: glogAdapter{g.Lo
 ### TOML 基座段
 
 顶层键包括 `identity_headers`、`trust_identity_header`、
-`required_plugins`、`[log]` 和 `[[tokens]]`。基座解码后会检查配置认领情况：
+`required_plugins` 和 `[[tokens]]`。基座解码后会检查配置认领情况：
 未知键、拼错的段落或字段、以及存在但没有安装对应插件的插件段落都会使启动失败。
 插件应通过 `Registry.Config` 使用具名结构体解码自己的段落；用 map 兜底会削弱
 字段拼写检查。
@@ -81,8 +81,6 @@ r := toolify.New(toolify.Config{ConfigPath: "mcp.toml", Logger: glogAdapter{g.Lo
 * `trust_identity_header` 默认 `false`。开启它的前提是前置可信网关已经认证调用人
   并覆盖这些请求头；基座不据此实现按人授权。
 * `required_plugins` 是插件名数组，和 `Config.RequiredPlugins` 合并。
-* `[log].logid_header` 同时指定入站和出站 logid 头；省略或空值默认为
-  `X-Log-Id`。
 * 每个 `[[tokens]]` 的 `token`、`name`、`applicant` 均必须非空；`token` 和
   `name` 不能与其他条目重复。`allow` 和 `deny` 是 selector 字符串数组，
   每条数组内为 OR。
@@ -171,13 +169,36 @@ hook 按注册顺序最多执行一次；hook 返回 error 或 panic 会让启�
 `SelfAddr`（它是副本身份，填负载均衡会让所有副本看起来是同一个）；交给外部的链接取
 `PublicBaseURL`，那一项可以是域名/VIP。
 
-## logid
+## Trace context
 
-每个 HTTP 请求经 `HTTPLogID` 处理：从配置的头（默认 `X-Log-Id`）读取，缺失或
-不合规时生成 16 位小写十六进制值；合规值长度为 1 至 64 字节，字符集仅允许
-`A-Z a-z 0-9 . _ - :`。该值写回同名响应头、放入 context，并通过 `Call.LogID`
-提供给插件。不合规输入会被丢弃并限流告警；合规输入不会去重，因此调用方重复
-使用同一 logid 时无法保证事件一一对应。
+日志 id 即 W3C trace-id。MCP 端点与每条插件路由都经过 `HTTPTrace`，它位于链路最外层
+（`HTTPTrace → HTTPHeaders → 认证 → owner 路由 → MCP handler`），所以 `401` 与转发的请求
+同样带 trace-id。无需任何配置，两种部署模式共用一条规则：
+
+| 请求到达时的 ctx | 行为 |
+|---|---|
+| 已有本地 span（外挂到带 tracing 中间件的宿主，如 gf） | 沿用：不再建 span、不读请求头。日志 id 与宿主 trace-id 一致。 |
+| 只有远端 span context（宿主只提取了头、没建 span） | 以它为父建 server span。 |
+| 都没有（`Start`，或宿主没有 tracing） | 提取 `traceparent`（以及宿主全局 propagator 认识的格式，如 B3），再建 server span。头缺失或格式不合法时新开 trace。 |
+
+* 提取时总是显式包含 W3C TraceContext：otel 的全局 propagator 在宿主没设置时是 no-op。
+  宿主的全局 propagator 与之组合，两者都提取到时以 W3C 为准。
+* span 用全局 `TracerProvider`。基座从不配置 exporter：要导出 span，请在宿主 `main` 里调用
+  `otel.SetTracerProvider`。默认 no-op provider 下日志串联照常工作——没有上游上下文时由基座
+  自行生成 trace-id。
+* server span 命名为 `<METHOD> <route>`，route 是 `Mount` 前缀（挂在根上为 `/`）或插件路由
+  挂载后的 pattern；属性有 `http.request.method`、`url.path`、`server.address`、
+  `http.response.status_code`，`5xx` 标记为 error。
+* 响应带 `traceresponse: 00-<trace-id>-<span-id>-<flags>`（W3C Trace Context Level 2），
+  没带 `traceparent` 的调用方也能据此查日志。
+* `LogIDFromContext(ctx)`、`Call.LogID`、日志字段 `logid`、audit 的 `Event.LogID` 都是
+  32 位小写十六进制的 trace-id。
+* owner 转发是请求离开副本的一跳：建 `owner forward` client span，用本次上下文替换入站的
+  trace 头，并去掉属主回写的 `traceresponse`，调用方只收到一份。见 [Owner routing](owner-routing.zh-CN.md)。
+* 工具代码自己发起的出站 HTTP 调用不由基座追踪，基座也不改全局 transport（工具下游大多是
+  第三方）。需要的工具可用 `otelhttp.NewTransport` 或 gf 的 `gclient`，并传入工具 ctx（其中已带 span）。
+
+原 `[log].logid_header` 与 `X-Log-Id` 头已删除；仍含 `[log]` 段的配置会因未认领键而启动失败。
 
 ## 插件安全边界
 

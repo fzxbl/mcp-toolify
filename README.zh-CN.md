@@ -13,7 +13,7 @@
 
 - **注解驱动生成**：为函数添加 `// mcp:tool`，运行 `go generate`，即可生成类型化 wrapper、输入结构体、JSON Schema 和注册代码。
 - **运行期无反射**：生成的 wrapper 直接调用目标函数，函数签名变化会在编译阶段暴露。
-- **统一运行时**：提供 Streamable HTTP、工具注册、token 认证与 selector 准入、logid、owner routing 和中间件链。
+- **统一运行时**：提供 Streamable HTTP、工具注册、token 认证与 selector 准入、W3C trace context、owner routing 和中间件链。
 - **插件化策略**：审计、大结果落盘及部署方自定义策略通过插件安装，不进入基座。
 - **灵活部署**：支持独立启动、嵌入现有服务和多副本部署。
 

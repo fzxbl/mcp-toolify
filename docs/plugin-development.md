@@ -83,7 +83,7 @@ Middleware receives `*runtime.Call`. The source, mutability, and important const
 | `Args` | Raw JSON arguments from `tools/call` | Writable; the execution terminus uses the rewritten value. Make a defensive copy before handing it to another component |
 | `Headers` | Snapshot of HTTP request headers | Read-only contract; credentials are removed. Plugins must not modify it or obtain credentials from the original request |
 | `Subject` | Calling principal resolved during token authentication | Readable; `ID` is empty by default, and `Token` is the token purpose name, not the token value. Per-user policies must reject an empty identity |
-| `LogID` | Request identifier generated or received by the HTTP log-ID layer | Readable; use it to correlate requests and logs |
+| `LogID` | The request's W3C trace-id (32 lowercase hex), adopted from the host span or upstream `traceparent`, or generated | Readable; use it to correlate requests and logs |
 | `Meta` | Plugin communication map created by runtime or written by plugins | Writable; use base constants for cross-plugin keys and prefix private keys with `<plugin-name>.` |
 | `Tools` | Base-injected tool lookup function | Callable, but check for nil first; useful for plugins that need to inspect the tool list |
 
