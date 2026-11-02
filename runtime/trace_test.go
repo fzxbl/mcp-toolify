@@ -304,3 +304,25 @@ func TestPluginRouteSpanName(t *testing.T) {
 		t.Fatalf("spans = %+v, want 1 named \"GET /mcp/plugin/spill/\"", len(spans))
 	}
 }
+
+// unwrapOnly 模拟只实现 Unwrap 的宿主中间件 writer（Go 1.20 之后的常见写法），
+// 它自己没有 Flush，flush 要靠 ResponseController 沿 Unwrap 往下找。
+type unwrapOnly struct{ rec *httptest.ResponseRecorder }
+
+func (u unwrapOnly) Header() http.Header         { return u.rec.Header() }
+func (u unwrapOnly) Write(b []byte) (int, error) { return u.rec.Write(b) }
+func (u unwrapOnly) WriteHeader(code int)        { u.rec.WriteHeader(code) }
+func (u unwrapOnly) Unwrap() http.ResponseWriter { return u.rec }
+
+func TestHTTPTraceFlushReachesUnwrapOnlyWriter(t *testing.T) {
+	rec := httptest.NewRecorder()
+	h := HTTPTrace("/mcp", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			t.Errorf("Flush: %v", err)
+		}
+	}))
+	h.ServeHTTP(unwrapOnly{rec}, httptest.NewRequest(http.MethodGet, "/mcp", nil))
+	if !rec.Flushed {
+		t.Fatal("flush was swallowed: underlying writer never flushed")
+	}
+}

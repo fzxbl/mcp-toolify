@@ -149,10 +149,13 @@ func (w *traceStatusWriter) Write(b []byte) (int, error) {
 }
 
 // Flush 保留 SSE 所需的 http.Flusher 能力。
-func (w *traceStatusWriter) Flush() {
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
+func (w *traceStatusWriter) Flush() { _ = w.FlushError() }
+
+// FlushError 经 ResponseController 沿 Unwrap 链往下找 flusher：只断言紧邻的下一层会吞掉
+// flush——宿主中间件常常只实现 Unwrap 而不实现 Flush，而 ResponseController 遇到本类型
+// 自带的 Flush 方法就不再往下找了。
+func (w *traceStatusWriter) FlushError() error {
+	return http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 // Unwrap 供 http.ResponseController 访问底层 writer。
