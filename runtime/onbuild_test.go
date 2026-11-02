@@ -181,7 +181,7 @@ func TestOnBuildHookMustNotMutateRegistry(t *testing.T) {
 		},
 		"Config": func(r *Registry) {
 			var cfg struct {
-				Log LogConfig `toml:"log"`
+				Tokens []TokenConfig `toml:"tokens"`
 			}
 			_ = r.Config(&cfg)
 		},

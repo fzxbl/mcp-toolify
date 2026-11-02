@@ -111,7 +111,7 @@ func TestNewCallToolsCall(t *testing.T) {
 		Name:      "orders.create",
 		Arguments: json.RawMessage(`{"app":"a"}`),
 	}}
-	ctx := WithLogID(WithHeaders(context.Background(), http.Header{"X-Mcp-User": {"zhangsan"}}), "abc123")
+	ctx := WithHeaders(ctxWithTraceID("4bf92f3577b34da6a3ce929d0e0e4736"), http.Header{"X-Mcp-User": {"zhangsan"}})
 	c := newCall(ctx, "tools/call", req)
 
 	if c.Method != "tools/call" || c.Tool != "orders.create" {
@@ -120,7 +120,7 @@ func TestNewCallToolsCall(t *testing.T) {
 	if string(c.Args) != `{"app":"a"}` {
 		t.Errorf("args = %s", c.Args)
 	}
-	if c.LogID != "abc123" {
+	if c.LogID != "4bf92f3577b34da6a3ce929d0e0e4736" {
 		t.Errorf("logid = %q", c.LogID)
 	}
 	if c.Headers.Get("X-MCP-User") != "zhangsan" {

@@ -36,7 +36,7 @@ func (defaultLogger) Log(ctx context.Context, level slog.Level, msg string, args
 type loggerBox struct{ l Logger }
 
 // currentLog 是进程级生效的 Logger。与 SelfAddr / logid 头名一样是进程级状态：
-// HTTPLogID、owner 路由这些包级 HTTP 包装拿不到 Registry，只能从这里取。
+// HTTPTrace、owner 路由这些包级 HTTP 包装拿不到 Registry，只能从这里取。
 var currentLog atomic.Pointer[loggerBox]
 
 func init() { currentLog.Store(&loggerBox{defaultLogger{}}) }

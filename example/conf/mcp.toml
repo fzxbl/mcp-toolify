@@ -22,9 +22,6 @@ identity_headers = ["X-MCP-User"]
 # 必须在场的插件，缺一个就启动失败。
 required_plugins = ["spill"]
 
-[log]
-logid_header = "X-Log-Id"
-
 # ── 基座：token 鉴权（必填）────────────────────────────────────────────────
 # 只读通道：只能看见、也只能执行 capability=read 且 risk in (none,low) 的工具。
 # deny 里的 "!risk" / "!capability" 是必要兜底：k8s 语义下缺失该 key 也算匹配 !=/notin，

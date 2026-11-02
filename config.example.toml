@@ -54,14 +54,14 @@ identity_headers = ["X-MCP-User"]
 #     忘装插件就是静默失效，因此由部署方在此声明。与 Config.RequiredPlugins 取并集。
 # required_plugins = ["spill"]
 
-# ── Log: request id (logid) for correlation ────────────────────────────────
-# EN: Each HTTP request gets a logid — taken from this header if present, else
-#     generated — injected into ctx, echoed back in the same response header, and
-#     visible to plugins as Call.LogID. Omit => default "X-Log-Id".
-# 中: 每个 HTTP 请求都有一个 logid：优先取该头，缺失则自动生成；注入 ctx、回写同名
-#     响应头，并以 Call.LogID 暴露给插件。省略 => 默认 "X-Log-Id"。
-[log]
-logid_header = "X-Log-Id"
+# ── Tracing: W3C trace context (no configuration) ──────────────────────────
+# EN: Log ids are W3C trace-ids. An upstream `traceparent` is continued, otherwise
+#     a new trace starts; the id is echoed in the `traceresponse` header and visible
+#     to plugins as Call.LogID. Configure exporters via otel in the host's main.
+#     The former [log].logid_header was removed; keeping it fails startup.
+# 中: 日志 id 即 W3C trace-id：上游带 traceparent 就接上，否则新开 trace；
+#     经 traceresponse 响应头回写，并以 Call.LogID 暴露给插件。exporter 由宿主 main 经
+#     otel 配置。原 [log].logid_header 已删除，保留该段会启动失败。
 
 # ── Token authorization (MANDATORY) ────────────────────────────────────────
 # EN: Each token carries `allow` / `deny` k8s-style label selectors matched

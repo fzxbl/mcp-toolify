@@ -456,14 +456,13 @@ func (r *Registry) validate() error {
 }
 
 // baseFileConfig 是基座自己那部分配置：[[tokens]]、identity_headers、
-// trust_identity_header、required_plugins 与 [log]。
+// trust_identity_header 与 required_plugins。
 // 插件段落由各插件用 Registry.Config 自行解码并认领。
 type baseFileConfig struct {
 	Tokens              []TokenConfig `toml:"tokens"`
 	IdentityHeaders     []string      `toml:"identity_headers"`
 	TrustIdentityHeader bool          `toml:"trust_identity_header"`
 	RequiredPlugins     []string      `toml:"required_plugins"`
-	Log                 LogConfig     `toml:"log"`
 }
 
 // loadBase 读基座配置并构造 TokenAuthz。
@@ -496,7 +495,6 @@ func (r *Registry) loadBase() error {
 	}
 	r.az = az
 	r.fileRequired = fc.RequiredPlugins
-	SetLogIDHeader(fc.Log.LogIDHeader)
 	return nil
 }
 
@@ -531,7 +529,7 @@ func (r *Registry) checkConfigKeys() error {
 //
 // 链序（由外到内）：
 //
-//	HTTPLogID → HTTPHeaders → 认证(401) → owner 路由 → MCP handler
+//	HTTPTrace → HTTPHeaders → 认证(401) → owner 路由 → MCP handler
 //	                                                   └ token 准入 → 插件链 → 工具执行
 //
 // token 准入固定装在插件链之前：它是基座的访问控制，不能被插件顺序影响。
@@ -592,7 +590,7 @@ func (r *Registry) buildOnceBody() (http.Handler, error) {
 		&mcp.StreamableHTTPOptions{Stateless: true},
 	)
 	// owner 路由在认证之内：转发前请求已通过认证，属主副本会再认证一次。
-	return HTTPLogID(HTTPHeaders(r.az.HTTPMiddleware(withMCPOwnerRouting(h)))), nil
+	return HTTPTrace("/", HTTPHeaders(r.az.HTTPMiddleware(withMCPOwnerRouting(h)))), nil
 }
 
 // Handlers 返回可挂载到既有 HTTP server 的 MCP handler 与插件注册的路由。

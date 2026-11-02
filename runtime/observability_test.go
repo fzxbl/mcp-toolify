@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"log"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -37,52 +35,6 @@ func weakAuthz(t *testing.T) *TokenAuthz {
 		t.Fatal(err)
 	}
 	return az
-}
-
-// TestInboundLogIDMustBeWellFormed 是终审 I2 的回归：入站 logid 完全由调用方控制，
-// 而它是「宿主 access log ↔ 审计事件 ↔ 框架日志」唯一的 join key。原样采信时，
-// 一个带空格与 key=value 的头会被整串写进无引号的日志行，等于允许注入伪造字段。
-func TestInboundLogIDMustBeWellFormed(t *testing.T) {
-	for _, tc := range []struct {
-		name, in string
-		keep     bool
-	}{
-		{"正常十六进制", "0123456789abcdef", true},
-		{"带连字符的 uuid", "b7f1c0de-1234-4a5b-8c9d-0e1f2a3b4c5d", true},
-		{"带冒号的 trace id", "trace:abc.def_01", true},
-		{"注入 key=value", "fake logid=deadbeef tool=greeter.greet actor=admin", false},
-		{"带换行", "abc\ndef", false},
-		{"带引号", `ab"cd`, false},
-		{"超长", strings.Repeat("A", maxLogIDLen+1), false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var got string
-			h := HTTPLogID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				got = LogIDFromContext(r.Context())
-			}))
-			req := httptest.NewRequest(http.MethodPost, "/", nil)
-			req.Header.Set(defaultLogIDHeader, tc.in)
-			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, req)
-
-			if tc.keep {
-				if got != tc.in {
-					t.Errorf("合规的 logid 应原样采信，got %q want %q", got, tc.in)
-				}
-				return
-			}
-			if got == tc.in {
-				t.Errorf("不合规的 logid 必须丢弃，实际原样采信了 %q", got)
-			}
-			if !validLogID(got) {
-				t.Errorf("丢弃后应自生成一个合规值，got %q", got)
-			}
-			// 响应头也要回写成生成后的那个值，否则上游拿着旧值对不上账。
-			if h := rec.Header().Get(defaultLogIDHeader); h != got {
-				t.Errorf("响应头 = %q，want 与 ctx 里的一致 %q", h, got)
-			}
-		})
-	}
 }
 
 // TestAuthzDenyIsLogged 是终审 C1 的回归：基座准入固定装在插件链之前，它的拒绝

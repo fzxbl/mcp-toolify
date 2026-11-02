@@ -65,7 +65,7 @@ func TestInjectedLoggerReceivesAuthzDeny(t *testing.T) {
 	h := weakAuthz(t).Middleware()(func(ctx context.Context, c *Call) (*Result, error) {
 		return TextResult("executed"), nil
 	})
-	ctx := WithLogID(context.Background(), "lid-deny")
+	ctx := ctxWithTraceID("4bf92f3577b34da6a3ce929d0e0e4736")
 	if _, err := h(ctx, &Call{Method: "tools/call", Tool: "demo.write",
 		Subject: &Subject{Token: "weak"}}); err != nil {
 		t.Fatal(err)
@@ -77,7 +77,7 @@ func TestInjectedLoggerReceivesAuthzDeny(t *testing.T) {
 	if rec.level != slog.LevelWarn {
 		t.Errorf("准入拒绝应为 Warn，实际 %v", rec.level)
 	}
-	if len(rec.args) != 2 || rec.args[0] != "logid" || rec.args[1] != "lid-deny" {
+	if len(rec.args) != 2 || rec.args[0] != "logid" || rec.args[1] != "4bf92f3577b34da6a3ce929d0e0e4736" {
 		t.Errorf("准入拒绝必须带 logid 字段，实际 args = %v", rec.args)
 	}
 }
@@ -105,9 +105,9 @@ func TestNilLoggerFallsBackToSlogDefault(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(old) })
 
-	logf(WithLogID(context.Background(), "lid-x"), slog.LevelWarn, "hello %s", "world")
+	logf(ctxWithTraceID("4bf92f3577b34da6a3ce929d0e0e4736"), slog.LevelWarn, "hello %s", "world")
 	out := buf.String()
-	for _, want := range []string{"level=WARN", "hello world", "logid=lid-x"} {
+	for _, want := range []string{"level=WARN", "hello world", "logid=4bf92f3577b34da6a3ce929d0e0e4736"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("默认出口缺少 %q: %q", want, out)
 		}

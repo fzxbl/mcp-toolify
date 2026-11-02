@@ -267,3 +267,13 @@ func TestConfigExampleLoads(t *testing.T) {
 		t.Fatalf("config.example.toml 无法被基座加载: %v", err)
 	}
 }
+
+// TestLogSectionRejected：[log].logid_header 已随 trace context 删除，留着它的旧配置
+// 必须启动失败，而不是静默忽略——否则部署方会以为自定义的 logid 头还在生效。
+func TestLogSectionRejected(t *testing.T) {
+	r := New(Config{ConfigPath: writeTokenConfig(t, okTokenConfig+"\n[log]\nlogid_header = \"X-Log-Id\"\n")}, nil)
+	_, _, err := r.Handlers()
+	if err == nil || !strings.Contains(err.Error(), "log") {
+		t.Fatalf("err = %v, want startup failure naming [log]", err)
+	}
+}
